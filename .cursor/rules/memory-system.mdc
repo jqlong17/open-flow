@@ -1,0 +1,27 @@
+---
+description: 记忆系统元规则——何时以及如何更新知识索引与对话记录
+globs: docs/**/*.md, .cursor/**/*
+---
+
+# 记忆系统更新规则
+
+当发生以下情况时，请更新项目记忆文件：
+
+## 1. 何时更新
+
+- **功能/代码/配置发生实质性变化**：更新 `docs/CURRENT_STATE.md` 的「已完成功能」「最近修改的文件」「下一步计划」。
+- **阻塞项或优先级变化**：更新 `docs/CURRENT_STATE.md` 的「当前最大阻塞」。
+- **完成一次有决策或实现的对话**：在 `docs/sessions/` 下新增或追加会话摘要，并更新 `docs/sessions/INDEX.md`。
+- **新增文档、脚本或重要路径**：在 `docs/INDEX.md` 对应层级补充条目。
+
+## 2. 更新方式
+
+- **CURRENT_STATE.md**：只改相关小节，保留原有结构；文末「最后更新」改为当前日期。
+- **INDEX.md**：在 1/2/3 层下增删改条目，保持 3 层树形与表格格式。
+- **sessions**：新会话建 `session-YYYY-MM-DD.md`（若同日多段可加后缀），在 `INDEX.md` 表里加一行。
+
+## 3. 何时执行更新（触发方式）
+
+- **用户输入「更新索引」**：立即按上述规则更新 `docs/CURRENT_STATE.md`、`docs/sessions/`、`docs/sessions/INDEX.md`（及 `docs/INDEX.md` 若有必要）。无需写 last-index-date，除非希望与「每日首次」一致。
+- **每天第一次对话**：`sessionStart` 会在今日尚未更新时在注入内容中加上【今日尚未做记忆更新】提示。请在本轮对话中根据当前对话内容完成一次记忆更新，并将今日日期（YYYY-MM-DD）写入 `.cursor/hooks/state/last-index-date`（目录不存在则先创建），以便次日不再重复提示。
+- 其他需要更新记忆时（如完成重要功能/决策后），按第 1 节判断并更新即可。

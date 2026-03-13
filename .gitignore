@@ -1,0 +1,4 @@
+/target
+.cursor/hooks/state/
+.venv-modelscope311/
+python/.venv/

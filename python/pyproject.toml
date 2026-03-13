@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open-flow"
+version = "0.1.0"
+description = "Open Flow 语音转写 (Python)：SenseVoice 官方推理"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "funasr>=1.0.0",
+    "modelscope>=1.9.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+    "pyperclip>=1.8.0",
+]
+
+[project.optional-dependencies]
+dev = []
+
+[project.scripts]
+open-flow-py = "open_flow.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["open_flow*"]

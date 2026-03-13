@@ -1,0 +1,11 @@
+# Open Flow (Python) - 语音转写
+# SenseVoice 官方推理（FunASR 依赖 torch/torchaudio）
+torch>=2.0.0
+torchaudio>=2.0.0
+funasr>=1.0.0
+modelscope>=1.9.0
+# 录音（transcribe 无 --file 时）
+sounddevice>=0.4.6
+numpy>=1.24.0
+# 剪贴板（--output clipboard）
+pyperclip>=1.8.0

@@ -1,0 +1,63 @@
+[package]
+name = "open-flow"
+version = "0.1.0"
+edition = "2021"
+authors = ["Open Flow Contributors"]
+description = "AI coding voice input daemon for macOS - macOS 全局语音输入工具"
+license = "MIT"
+repository = "https://github.com/open-flow-project/open-flow"
+keywords = ["voice", "asr", "speech-to-text", "macos", "ai-coding"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "open-flow"
+path = "src/main.rs"
+
+[dependencies]
+# Core
+tokio = { version = "1.35", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+directories = "5.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Audio
+cpal = "0.15"
+hound = "3.5"
+ringbuf = "0.3"
+
+# macOS Integration
+core-foundation = "0.9"
+core-graphics = "0.23"
+cocoa = "0.25"
+objc = "0.2"
+rdev = "0.5"
+arboard = "3"
+
+# IPC / Daemon
+interprocess = "1.2"
+
+# ASR - SenseVoice ONNX integration
+ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
+ndarray = "0.17.2"
+rubato = "0.16"
+realfft = "3.4"
+
+# Utils
+uuid = { version = "1.6", features = ["v4"] }
+tempfile = "3.8"
+rand = "0.8"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

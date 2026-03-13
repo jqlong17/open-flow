@@ -1,0 +1,84 @@
+use anyhow::Result;
+use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+use tracing::info;
+
+const CONFIG_FILE: &str = "config.toml";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    pub model_path: Option<PathBuf>,
+    pub hotkey: String,
+    pub output_mode: OutputMode,
+    pub language: String,
+    pub auto_paste: bool,
+    pub clipboard_restore: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputMode {
+    Stdout,
+    Clipboard,
+    Paste,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            model_path: None,
+            hotkey: "right-command".to_string(),
+            output_mode: OutputMode::Paste,
+            language: "auto".to_string(),
+            auto_paste: true,
+            clipboard_restore: true,
+        }
+    }
+}
+
+impl Config {
+    pub fn load() -> Result<Self> {
+        let config_path = Self::config_path()?;
+
+        if !config_path.exists() {
+            info!("Config file not found, creating default config");
+            let config = Config::default();
+            config.save()?;
+            return Ok(config);
+        }
+
+        let content = fs::read_to_string(&config_path)?;
+        let config: Config = toml::from_str(&content)?;
+
+        Ok(config)
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let config_path = Self::config_path()?;
+        let content = toml::to_string_pretty(self)?;
+        fs::write(config_path, content)?;
+        Ok(())
+    }
+
+    pub fn config_path() -> Result<PathBuf> {
+        let dirs = ProjectDirs::from("com", "openflow", "open-flow")
+            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
+
+        let config_dir = dirs.config_dir();
+        fs::create_dir_all(config_dir)?;
+
+        Ok(config_dir.join(CONFIG_FILE))
+    }
+
+    pub fn data_dir() -> Result<PathBuf> {
+        let dirs = ProjectDirs::from("com", "openflow", "open-flow")
+            .ok_or_else(|| anyhow::anyhow!("Could not determine data directory"))?;
+
+        let data_dir = dirs.data_dir();
+        fs::create_dir_all(data_dir)?;
+
+        Ok(data_dir.to_path_buf())
+    }
+}
