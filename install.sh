@@ -2,9 +2,9 @@
 set -e
 
 # Open Flow Installation Script
-# Usage: curl -sSL https://raw.githubusercontent.com/open-flow-project/open-flow/main/install.sh | sh
+# Usage: curl -sSL https://raw.githubusercontent.com/jqlong17/open-flow/main/install.sh | sh
 
-REPO="open-flow-project/open-flow"
+REPO="jqlong17/open-flow"
 INSTALL_DIR="$HOME/.local/bin"
 VERSION="${VERSION:-latest}"
 
