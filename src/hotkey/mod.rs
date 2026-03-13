@@ -31,29 +31,37 @@ impl HotkeyListener {
 
     fn run_listen_loop(sender: Sender<HotkeyEvent>) -> Result<()> {
         use rdev::{listen, Event, EventType, Key};
-        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::{AtomicBool, AtomicU64};
 
-        // 防止连续触发（按住不放时只发一次 Pressed）
         let pressed = Arc::new(AtomicBool::new(false));
         let pressed_clone = pressed.clone();
+        let press_count = Arc::new(AtomicU64::new(0));
+        let release_count = Arc::new(AtomicU64::new(0));
+        let pc = press_count.clone();
+        let rc = release_count.clone();
 
         println!("⌨️  热键监听器已启动（CGEventTap）");
 
         let result = listen(move |event: Event| {
             match event.event_type {
                 EventType::KeyPress(Key::MetaRight) => {
-                    // 只在从未按下状态第一次按下时触发
-                    if !pressed_clone.swap(true, Ordering::SeqCst) {
-                        info!("[Hotkey] 检测到按下（右侧 Command）");
-                        if let Err(e) = sender.send(HotkeyEvent::Pressed) {
-                            error!("发送热键事件失败: {}", e);
-                        }
+                    let n = pc.fetch_add(1, Ordering::SeqCst) + 1;
+                    let was = pressed_clone.swap(true, Ordering::SeqCst);
+                    info!(
+                        "[Hotkey] 事件 #press={} 按下（右侧 Command）was_pressed={} -> 发送",
+                        n, was
+                    );
+                    if let Err(e) = sender.send(HotkeyEvent::Pressed) {
+                        error!("发送热键事件失败: {}", e);
                     }
                 }
                 EventType::KeyRelease(Key::MetaRight) => {
-                    if pressed_clone.swap(false, Ordering::SeqCst) {
-                        info!("[Hotkey] 检测到松开（右侧 Command）");
-                    }
+                    let n = rc.fetch_add(1, Ordering::SeqCst) + 1;
+                    let was = pressed_clone.swap(false, Ordering::SeqCst);
+                    info!(
+                        "[Hotkey] 事件 #release={} 松开（右侧 Command）was_pressed={}",
+                        n, was
+                    );
                 }
                 _ => {}
             }

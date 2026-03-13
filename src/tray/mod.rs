@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, Submenu};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 use tracing::info;
 
@@ -26,6 +26,8 @@ impl TrayHandle {
 }
 
 const ICON_SIZE: u32 = 22;
+/// 圆点半径（像素），越小越低调；4 ≈ 小圆点，9 ≈ 大圆
+const DOT_RADIUS: f32 = 4.0;
 
 /// 托盘状态：待机 / 录音中 / 转写中
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,19 +62,12 @@ impl TrayState {
 
         let (state_tx, state_rx) = std::sync::mpsc::sync_channel::<TrayIconState>(16);
 
-        // macOS: 根 Menu 只能添加 Submenu
-        let submenu = Submenu::with_id_and_items(
-            "main",
-            "Open Flow",
-            true,
-            &[
-                &MenuItem::with_id("title", format!("v{}", env!("CARGO_PKG_VERSION")), false, None),
-                &MenuItem::with_id("exit", "退出", true, None),
-            ],
-        ).map_err(|e| tray_icon::Error::OsError(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
-
-        let menu = Menu::with_items(&[&submenu])
-            .map_err(|e| tray_icon::Error::OsError(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+        // 菜单项直接挂在根 Menu 上，点击托盘图标即可看到
+        let menu = Menu::with_items(&[
+            &MenuItem::with_id("title", format!("Open Flow  v{}", env!("CARGO_PKG_VERSION")), false, None),
+            &MenuItem::with_id("status", "状态：待机", false, None),
+            &MenuItem::with_id("exit", "退出", true, None),
+        ]).map_err(|e| tray_icon::Error::OsError(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
 
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
@@ -142,25 +137,25 @@ impl TrayState {
     }
 }
 
-/// 创建 22x22 的实心圆 RGBA 图标
+/// 创建 22x22 的小圆点 RGBA 图标（带抗锯齿边缘，DOT_RADIUS 控制大小）
 fn create_circle_icon(r: u8, g: u8, b: u8) -> Icon {
     let size = ICON_SIZE as usize;
     let center = size as f32 / 2.0 - 0.5;
-    let radius_sq = (center - 1.0).powi(2);
 
     let mut rgba = vec![0u8; size * size * 4];
     for y in 0..size {
         for x in 0..size {
             let dx = x as f32 - center;
             let dy = y as f32 - center;
+            let dist = (dx * dx + dy * dy).sqrt();
             let idx = (y * size + x) * 4;
-            if dx * dx + dy * dy <= radius_sq {
+            // 抗锯齿：在边缘 1px 范围内渐变 alpha
+            let alpha = ((DOT_RADIUS + 0.5 - dist).clamp(0.0, 1.0) * 255.0) as u8;
+            if alpha > 0 {
                 rgba[idx] = r;
                 rgba[idx + 1] = g;
                 rgba[idx + 2] = b;
-                rgba[idx + 3] = 255;
-            } else {
-                rgba[idx + 3] = 0;
+                rgba[idx + 3] = alpha;
             }
         }
     }

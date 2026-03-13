@@ -28,6 +28,8 @@ pub struct Daemon {
     state: Arc<Mutex<RecordingState>>,
     /// 转写/粘贴进行中时忽略新热键，避免竞态
     is_processing: AtomicBool,
+    /// 已收到的热键事件次数（用于日志：第 N 次按键）
+    hotkey_recv_count: std::sync::atomic::AtomicU64,
     model_path: PathBuf,
     audio_capture: AudioCapture,
     asr_engine: Arc<Mutex<AsrEngine>>,
@@ -54,6 +56,7 @@ impl Daemon {
             config,
             state: Arc::new(Mutex::new(RecordingState::default())),
             is_processing: AtomicBool::new(false),
+            hotkey_recv_count: std::sync::atomic::AtomicU64::new(0),
             model_path,
             audio_capture,
             asr_engine,
@@ -140,11 +143,15 @@ impl Daemon {
                         }
                         DaemonEvent::TranscriptionComplete(text) => {
                             self.set_tray(TrayIconState::Idle);
-                            info!("[Hotkey] 转写完成，已粘贴");
                             println!("📝 转写完成: {}", text);
+                            // 延迟 250ms 再粘贴，避免与用户紧接着的「第三次按键」重叠：
+                            // inject 模拟左 Command+V 会干扰 CGEventTap，导致右 Command 的 KeyPress 丢失、只收到 Release
+                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                            info!("[Hotkey] 开始粘贴");
                             if let Err(e) = self.text_injector.inject(&text) {
                                 eprintln!("⚠️  文字注入失败: {e}");
                             }
+                            info!("[Hotkey] 粘贴结束");
                         }
                     }
                 }
@@ -168,18 +175,19 @@ impl Daemon {
     }
 
     async fn handle_hotkey(&self, _event: HotkeyEvent, tx: &mpsc::Sender<DaemonEvent>) {
+        let n = self.hotkey_recv_count.fetch_add(1, Ordering::SeqCst) + 1;
         let is_processing = self.is_processing.load(Ordering::SeqCst);
         let is_recording = self.state.lock().unwrap().is_recording;
         info!(
-            "[Hotkey] 收到按键 is_recording={} is_processing={}",
-            is_recording, is_processing
+            "[Hotkey] 收到第 {} 次按键 is_recording={} is_processing={}",
+            n, is_recording, is_processing
         );
         if is_processing {
-            info!("[Hotkey] 忽略（转写中）");
+            info!("[Hotkey] 第 {} 次 -> 忽略（转写中）", n);
             return;
         }
         if is_recording {
-            info!("[Hotkey] 动作: 停止录音并转写");
+            info!("[Hotkey] 第 {} 次 -> 动作: 停止录音并转写", n);
             self.set_tray(TrayIconState::Transcribing);
             let res = self.stop_and_transcribe(tx).await;
             if let Err(e) = res {
@@ -187,7 +195,7 @@ impl Daemon {
                 eprintln!("⚠️  转写失败: {e}");
             }
         } else {
-            info!("[Hotkey] 动作: 开始录音");
+            info!("[Hotkey] 第 {} 次 -> 动作: 开始录音", n);
             if let Err(e) = self.start_recording() {
                 eprintln!("⚠️  录音启动失败: {e}");
             } else {

@@ -163,17 +163,55 @@ fn run_main_loop(tray: Option<&TrayState>) {
     }
 }
 
-/// 调用 Objective-C `[[NSRunLoop currentRunLoop] runUntilDate:…]` 驱动事件循环。
+/// 通过 `[NSApp nextEventMatchingMask:...]` 驱动 AppKit 事件队列。
+/// NSRunLoop::runUntilDate 只处理 run loop sources，无法分发托盘点击事件；
+/// 必须走 NSApplication 的事件队列才能响应 NSStatusItem 点击和菜单。
 #[cfg(target_os = "macos")]
 fn pump_run_loop_100ms() {
     use objc::{class, msg_send, sel, sel_impl};
+    use objc::runtime::Object;
+
     unsafe {
-        let rl_cls = class!(NSRunLoop);
-        let run_loop: *mut objc::runtime::Object = msg_send![rl_cls, currentRunLoop];
+        let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+
+        // 首次调用时设置为"配件"激活策略（无 Dock 图标，纯菜单栏 agent）
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            // NSApplicationActivationPolicyAccessory = 1
+            let _: () = msg_send![app, setActivationPolicy: 1i64];
+        });
+
         let date_cls = class!(NSDate);
-        let date: *mut objc::runtime::Object =
+        // kCFRunLoopDefaultMode
+        let mode: *mut Object = msg_send![
+            class!(NSString),
+            stringWithUTF8String: b"kCFRunLoopDefaultMode\0".as_ptr()
+                as *const std::os::raw::c_char
+        ];
+
+        // 第一次调用最多等 100ms；之后排空剩余事件（distantPast = 不阻塞）
+        let deadline: *mut Object =
             msg_send![date_cls, dateWithTimeIntervalSinceNow: 0.1f64];
-        let _: () = msg_send![run_loop, runUntilDate: date];
+        let past: *mut Object = msg_send![date_cls, distantPast];
+
+        let mut first = true;
+        loop {
+            let date = if first { deadline } else { past };
+            first = false;
+
+            let event: *mut Object = msg_send![
+                app,
+                nextEventMatchingMask: u64::MAX
+                untilDate: date
+                inMode: mode
+                dequeue: 1u8   // YES
+            ];
+            if event.is_null() {
+                break;
+            }
+            let _: () = msg_send![app, sendEvent: event];
+            let _: () = msg_send![app, updateWindows];
+        }
     }
 }
 
