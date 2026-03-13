@@ -44,13 +44,16 @@ impl HotkeyListener {
                 EventType::KeyPress(Key::MetaRight) => {
                     // 只在从未按下状态第一次按下时触发
                     if !pressed_clone.swap(true, Ordering::SeqCst) {
+                        info!("[Hotkey] 检测到按下（右侧 Command）");
                         if let Err(e) = sender.send(HotkeyEvent::Pressed) {
                             error!("发送热键事件失败: {}", e);
                         }
                     }
                 }
                 EventType::KeyRelease(Key::MetaRight) => {
-                    pressed_clone.store(false, Ordering::SeqCst);
+                    if pressed_clone.swap(false, Ordering::SeqCst) {
+                        info!("[Hotkey] 检测到松开（右侧 Command）");
+                    }
                 }
                 _ => {}
             }

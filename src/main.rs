@@ -73,6 +73,22 @@ enum Commands {
         duration: u64,
     },
 
+    /// Simulate Command key in loop for hotkey/recording test (需另终端先运行 open-flow start)
+    TestHotkey {
+        /// Number of cycles: press=start, wait, press=stop, wait
+        #[arg(short, long, default_value = "3")]
+        cycles: u32,
+        /// Seconds to "record" per cycle before simulating stop
+        #[arg(short, long, default_value = "3")]
+        record_secs: u64,
+        /// Seconds to wait after stop for transcription to finish
+        #[arg(short, long, default_value = "12")]
+        transcribe_wait_secs: u64,
+        /// Seconds to wait at start for daemon to be ready
+        #[arg(long, default_value = "8")]
+        ready_wait_secs: u64,
+    },
+
     /// Manually download the ASR model (手动下载模型，首次运行会自动触发无需手动执行)
     #[command(hide = true)]
     Setup {
@@ -150,6 +166,20 @@ async fn async_main(cmd: Commands) -> anyhow::Result<()> {
         }
         Commands::TestRecord { duration } => {
             commands::test_record::test_record(duration).await?;
+        }
+        Commands::TestHotkey {
+            cycles,
+            record_secs,
+            transcribe_wait_secs,
+            ready_wait_secs,
+        } => {
+            commands::test_hotkey::run_test_hotkey(
+                cycles,
+                record_secs,
+                transcribe_wait_secs,
+                ready_wait_secs,
+            )
+            .await?;
         }
         Commands::Setup { model_dir, force } => {
             commands::setup::run(model_dir, force).await?;

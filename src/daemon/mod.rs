@@ -34,8 +34,8 @@ pub struct Daemon {
     text_injector: TextInjector,
     /// 当前录音流（Some = 正在录音，drop 即停止）
     active_stream: Mutex<Option<cpal::Stream>>,
-    /// 当前录音缓冲区（与 stream callback 共享）
-    recording_buffer: Arc<Mutex<Vec<f32>>>,
+    /// 当前录音 session 的缓冲区（每次录音创建新 Arc，防止旧 stream 的 stale 回调污染新 session）
+    recording_buffer: Mutex<Arc<Mutex<Vec<f32>>>>,
     /// 托盘句柄（Send+Sync，状态更新发回主线程）
     tray: Option<Arc<TrayHandle>>,
 }
@@ -59,7 +59,7 @@ impl Daemon {
             asr_engine,
             text_injector,
             active_stream: Mutex::new(None),
-            recording_buffer: Arc::new(Mutex::new(Vec::new())),
+            recording_buffer: Mutex::new(Arc::new(Mutex::new(Vec::new()))),
             tray,
         })
     }
@@ -139,9 +139,8 @@ impl Daemon {
                             self.handle_hotkey(ev, &event_tx).await;
                         }
                         DaemonEvent::TranscriptionComplete(text) => {
-                            // 先清除 processing，避免转写后第一次按 Command 被误忽略
-                            self.is_processing.store(false, Ordering::SeqCst);
                             self.set_tray(TrayIconState::Idle);
+                            info!("[Hotkey] 转写完成，已粘贴");
                             println!("📝 转写完成: {}", text);
                             if let Err(e) = self.text_injector.inject(&text) {
                                 eprintln!("⚠️  文字注入失败: {e}");
@@ -169,11 +168,18 @@ impl Daemon {
     }
 
     async fn handle_hotkey(&self, _event: HotkeyEvent, tx: &mpsc::Sender<DaemonEvent>) {
-        if self.is_processing.load(Ordering::SeqCst) {
+        let is_processing = self.is_processing.load(Ordering::SeqCst);
+        let is_recording = self.state.lock().unwrap().is_recording;
+        info!(
+            "[Hotkey] 收到按键 is_recording={} is_processing={}",
+            is_recording, is_processing
+        );
+        if is_processing {
+            info!("[Hotkey] 忽略（转写中）");
             return;
         }
-        let is_recording = self.state.lock().unwrap().is_recording;
         if is_recording {
+            info!("[Hotkey] 动作: 停止录音并转写");
             self.set_tray(TrayIconState::Transcribing);
             let res = self.stop_and_transcribe(tx).await;
             if let Err(e) = res {
@@ -181,6 +187,7 @@ impl Daemon {
                 eprintln!("⚠️  转写失败: {e}");
             }
         } else {
+            info!("[Hotkey] 动作: 开始录音");
             if let Err(e) = self.start_recording() {
                 eprintln!("⚠️  录音启动失败: {e}");
             } else {
@@ -195,17 +202,19 @@ impl Daemon {
             return Ok(());
         }
 
-        self.recording_buffer.lock().unwrap().clear();
-
+        // 每次录音创建全新 Arc，旧 stream 的 stale 回调只写入旧 Arc，不影响本次 session
+        let session_buf: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
         let stream = self
             .audio_capture
-            .build_live_stream(self.recording_buffer.clone())
+            .build_live_stream(session_buf.clone())
             .context("创建录音流失败")?;
+        *self.recording_buffer.lock().unwrap() = session_buf;
         *self.active_stream.lock().unwrap() = Some(stream);
 
         state.is_recording = true;
         state.start_time = Some(std::time::Instant::now());
 
+        info!("[Hotkey] 录音已启动");
         println!("🔴 录音中... 再按右侧 Command 键停止");
         Ok(())
     }
@@ -225,9 +234,17 @@ impl Daemon {
                 .unwrap_or_default()
         };
 
+        // 先拿走本次 session 的 Arc，再 drop stream
+        // 这样即使旧 stream 有 stale 回调继续写入，也写入旧 Arc，不会影响下次 session
+        let session_buf = self.recording_buffer.lock().unwrap().clone();
         drop(self.active_stream.lock().unwrap().take());
 
-        let buffer: Vec<f32> = self.recording_buffer.lock().unwrap().clone();
+        let buffer: Vec<f32> = session_buf.lock().unwrap().clone();
+        info!(
+            "[Hotkey] 录音已停止，开始转写 (时长 {:.1}s, {} 样本)",
+            duration.as_secs_f32(),
+            buffer.len()
+        );
         println!(
             "⏹️  录音停止 ({:.1}s / {} 样本)，正在转写...",
             duration.as_secs_f32(),
@@ -277,6 +294,8 @@ impl Daemon {
 
         let _ = std::fs::remove_file(&audio_path);
 
+        // 在发送前清除，避免：Hotkey(P3) 先于 TranscriptionComplete 被处理时被误忽略
+        self.is_processing.store(false, Ordering::SeqCst);
         tx.send(DaemonEvent::TranscriptionComplete(result.text))
             .await
             .ok();
