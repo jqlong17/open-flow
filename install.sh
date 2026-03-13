@@ -2,7 +2,7 @@
 set -e
 
 # Open Flow Installation Script
-# Usage: curl -sSL https://raw.githubusercontent.com/jqlong17/open-flow/main/install.sh | sh
+# Usage: curl -sSL https://raw.githubusercontent.com/jqlong17/open-flow/master/install.sh | sh
 
 REPO="jqlong17/open-flow"
 INSTALL_DIR="$HOME/.local/bin"
