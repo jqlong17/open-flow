@@ -59,6 +59,8 @@ open-flow start
 
 安装脚本会下载二进制到 `~/.local/bin` 并立即启动。菜单栏出现灰色圆点即就绪，按右侧 Command 录音，再按一次转写并粘贴。
 
+**若提示「已在运行」但看不到托盘图标**：先执行 `open-flow stop` 停止旧版本，再 `open-flow start`。
+
 **首次使用**：在「系统设置 → 隐私与安全性 → 辅助功能」中为终端开启权限，否则热键和粘贴不生效。
 
 **从源码构建**（需 [Rust](https://rustup.rs/)）：`git clone https://github.com/jqlong17/open-flow.git && cd open-flow && cargo build --release`

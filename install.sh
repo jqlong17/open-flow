@@ -79,6 +79,8 @@ fi
 
 echo -e "${GREEN}✓ Open Flow installed successfully!${NC}"
 echo ""
+# 停止旧版本（若有），确保启动带托盘的新版本
+"$INSTALL_DIR/open-flow" stop 2>/dev/null || true
 echo "Starting Open Flow (first run auto-downloads ~230MB model)..."
 echo ""
 export PATH="$INSTALL_DIR:$PATH"
