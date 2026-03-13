@@ -1,5 +1,7 @@
 /target
+/models
 .cursor/hooks/state/
 .cursor/memory/
 .venv-modelscope311/
 python/.venv/
+python/__pycache__/
