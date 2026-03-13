@@ -3,8 +3,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
-const MODELSCOPE_BASE: &str =
-    "https://www.modelscope.cn/models/iic/SenseVoiceSmall-onnx/resolve/master";
+/// 模型下载源：Hugging Face（haixuantao 量化版，与 ModelScope 官方一致）
+const MODEL_BASE: &str = "https://huggingface.co/haixuantao/SenseVoiceSmall-onnx/resolve/main";
 
 /// 需要下载的文件列表：(远端文件名, 本地保存名, 预期大小描述)
 const MODEL_FILES: &[(&str, &str, &str)] = &[
@@ -114,6 +114,8 @@ async fn download_all(model_dir: Option<PathBuf>, force: bool) -> Result<()> {
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(600))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
         .build()?;
 
     for (remote_name, local_name, size_hint) in MODEL_FILES {
@@ -126,7 +128,7 @@ async fn download_all(model_dir: Option<PathBuf>, force: bool) -> Result<()> {
 
         println!("⬇️  正在下载: {} ({})", local_name, size_hint);
 
-        let url = format!("{}/{}", MODELSCOPE_BASE, remote_name);
+        let url = format!("{}/{}", MODEL_BASE, remote_name);
         download_file(&client, &url, &dest_path)
             .await
             .with_context(|| format!("下载失败: {} → {}", url, dest_path.display()))?;
