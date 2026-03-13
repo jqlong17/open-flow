@@ -30,7 +30,7 @@ pub struct Daemon {
     is_processing: AtomicBool,
     model_path: PathBuf,
     audio_capture: AudioCapture,
-    asr_engine: Mutex<AsrEngine>,
+    asr_engine: Arc<Mutex<AsrEngine>>,
     text_injector: TextInjector,
     /// 当前录音流（Some = 正在录音，drop 即停止）
     active_stream: Mutex<Option<cpal::Stream>>,
@@ -47,7 +47,7 @@ impl Daemon {
         tray: Option<Arc<TrayHandle>>,
     ) -> Result<Self> {
         let audio_capture = AudioCapture::new().context("初始化音频采集器失败")?;
-        let asr_engine = Mutex::new(AsrEngine::new(model_path.clone()));
+        let asr_engine = Arc::new(Mutex::new(AsrEngine::new(model_path.clone())));
         let text_injector = TextInjector::new();
 
         Ok(Self {
@@ -250,13 +250,23 @@ impl Daemon {
             .save_buffer_to_wav(&buffer, &audio_path)
             .context("保存录音失败")?;
 
-        let asr_engine = &self.asr_engine;
-        let result = match tokio::task::block_in_place(|| {
+        let asr_engine = self.asr_engine.clone();
+        let audio_path_clone = audio_path.clone();
+        let result = match tokio::task::spawn_blocking(move || {
             asr_engine
                 .lock()
                 .unwrap()
-                .transcribe(&audio_path, Some("auto"))
-        }) {
+                .transcribe(&audio_path_clone, Some("auto"))
+        })
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                self.is_processing.store(false, Ordering::SeqCst);
+                return Err(anyhow::anyhow!("spawn_blocking failed: {}", e));
+            }
+        };
+        let result = match result {
             Ok(r) => r,
             Err(e) => {
                 self.is_processing.store(false, Ordering::SeqCst);
