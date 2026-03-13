@@ -30,6 +30,7 @@ fn postprocess_tokens(tokens: Vec<String>) -> String {
 
 /// CTC 解码器
 pub struct CTCDecoder {
+    #[allow(dead_code)]
     token_to_id: HashMap<String, i32>,
     id_to_token: HashMap<i32, String>,
     blank_id: i32,
@@ -180,6 +181,7 @@ impl CTCDecoder {
     }
 
     /// 获取 token 数
+    #[allow(dead_code)]
     pub fn vocab_size(&self) -> usize {
         self.token_to_id.len()
     }

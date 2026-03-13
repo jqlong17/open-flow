@@ -5,7 +5,6 @@ use tracing::info;
 
 use crate::asr::AsrEngine;
 use crate::audio::AudioCapture;
-use crate::common::config::Config;
 
 /// 单次转写 - 录音并识别
 pub async fn run(
@@ -16,20 +15,7 @@ pub async fn run(
 ) -> Result<()> {
     info!("开始单次转写");
 
-    let model_path = match model_override {
-        Some(p) => {
-            if !p.is_dir() {
-                anyhow::bail!("模型路径不是目录: {:?}", p);
-            }
-            p
-        }
-        None => {
-            let config = Config::load()?;
-            config.model_path.ok_or_else(|| {
-                anyhow::anyhow!("未配置模型路径。请运行: open-flow config set-model <path> 或使用 --model <path>")
-            })?
-        }
-    };
+    let model_path = crate::cli::commands::setup::ensure_model_ready(model_override).await?;
     
     println!("🎙️  语音转写");
     println!();

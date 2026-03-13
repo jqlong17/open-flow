@@ -50,6 +50,12 @@ ndarray = "0.17.2"
 rubato = "0.16"
 realfft = "3.4"
 
+# HTTP client (for model download)
+reqwest = { version = "0.12", features = ["stream"] }
+
+# macOS menu bar tray icon
+tray-icon = "0.21"
+
 # Utils
 uuid = { version = "1.6", features = ["v4"] }
 tempfile = "3.8"

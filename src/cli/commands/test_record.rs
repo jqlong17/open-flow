@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::time::Duration;
-use tracing::info;
 
 use crate::audio::AudioCapture;
 

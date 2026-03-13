@@ -21,6 +21,7 @@ const MEL_FMAX_HZ: f32 = 8000.0;
 
 /// 音频预处理器
 pub struct AudioPreprocessor {
+    #[allow(dead_code)]
     sample_rate: u32,
     n_fft: usize,
     hop_length: usize,

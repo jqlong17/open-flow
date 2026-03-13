@@ -79,14 +79,22 @@ impl AsrEngine {
         engine
     }
 
+    /// 查找 ONNX 模型文件（支持 model.onnx 和 model_quant.onnx 两种文件名）
+    fn find_model_file(model_path: &Path) -> Option<PathBuf> {
+        for name in &["model.onnx", "model_quant.onnx"] {
+            let p = model_path.join(name);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        None
+    }
+
     /// 加载模型
     fn load_model(&mut self) -> Result<()> {
-        let model_file = self.model_path.join("model.onnx");
+        let model_file = Self::find_model_file(&self.model_path)
+            .ok_or_else(|| anyhow::anyhow!("模型文件不存在（已查找 model.onnx / model_quant.onnx）: {:?}", self.model_path))?;
         let tokens_file = self.model_path.join("tokens.json");
-
-        if !model_file.exists() {
-            anyhow::bail!("模型文件不存在: {:?}", model_file);
-        }
 
         if !tokens_file.exists() {
             anyhow::bail!("tokens 文件不存在: {:?}", tokens_file);
@@ -118,6 +126,21 @@ impl AsrEngine {
         info!("🎉 ASR 引擎完全就绪！");
 
         Ok(())
+    }
+
+    /// 预热：用 1 秒静音跑一次完整推理，消除 ORT JIT 首次编译开销。
+    /// 在 daemon 就绪前调用，使第一次真实转写延迟正常。
+    pub fn warmup(&mut self) {
+        if !self.ready {
+            return;
+        }
+        let silence = vec![0.0f32; 16000]; // 1 秒 16kHz 静音
+        let preprocessor = self.preprocessor.as_ref().unwrap();
+        if let Ok(features) = preprocessor.process(&silence, 16000) {
+            let inference = self.inference.as_mut().unwrap();
+            let _ = inference.infer(&features, 0, 0); // language=auto, textnorm=off
+        }
+        info!("✓ 模型预热完成");
     }
 
     /// 转录音频文件
@@ -240,7 +263,7 @@ impl AsrEngine {
     /// 检查 ASR 引擎状态
     pub fn check_status(&self) -> AsrStatus {
         let model_exists = self.model_path.exists();
-        let onnx_exists = self.model_path.join("model.onnx").exists();
+        let onnx_exists = Self::find_model_file(&self.model_path).is_some();
         let tokens_exists = self.model_path.join("tokens.json").exists();
 
         AsrStatus {
@@ -265,6 +288,7 @@ pub struct AsrStatus {
     pub model_path: PathBuf,
     pub model_exists: bool,
     pub onnx_exists: bool,
+    #[allow(dead_code)]
     pub tokens_exists: bool,
     pub ready: bool,
 }
@@ -287,8 +311,8 @@ mod regression_tests {
             eprintln!("跳过回归：testdata/mixed_zh_en.wav 不存在");
             return;
         }
-        if !model_path.join("model.onnx").exists() {
-            eprintln!("跳过回归：模型目录无 model.onnx");
+        if AsrEngine::find_model_file(&model_path).is_none() {
+            eprintln!("跳过回归：模型目录无 model.onnx / model_quant.onnx");
             return;
         }
         let mut engine = AsrEngine::new(model_path);

@@ -10,7 +10,7 @@ if [[ -n "$WORKSPACE_ROOT" && -d "$WORKSPACE_ROOT" ]]; then
 else
   ROOT="."
 fi
-STATE_FILE="${ROOT}/docs/CURRENT_STATE.md"
+STATE_FILE="${ROOT}/.cursor/memory/CURRENT_STATE.md"
 STATE_DIR="${ROOT}/.cursor/hooks/state"
 LAST_INDEX_DATE_FILE="${STATE_DIR}/last-index-date"
 TODAY=$(date +%Y-%m-%d)
@@ -36,7 +36,7 @@ SUFFIX="
 if [[ $NEED_DAILY_PROMPT -eq 1 ]]; then
   SUFFIX="${SUFFIX}
 
-【今日尚未做记忆更新】请在本轮对话中根据当前对话内容更新项目记忆：更新 docs/CURRENT_STATE.md、docs/sessions/ 及 docs/sessions/INDEX.md（若有新会话摘要）。完成后将今日日期（${TODAY}）写入 .cursor/hooks/state/last-index-date（若目录不存在请先创建）。"
+【今日尚未做记忆更新】请在本轮对话中根据当前对话内容更新项目记忆：更新 .cursor/memory/CURRENT_STATE.md、.cursor/memory/sessions/ 及 .cursor/memory/INDEX.md（若有必要）。完成后将今日日期（${TODAY}）写入 .cursor/hooks/state/last-index-date（若目录不存在请先创建）。"
 fi
 
 if [[ ! -f "$STATE_FILE" ]]; then

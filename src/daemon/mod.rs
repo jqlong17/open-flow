@@ -1,10 +1,9 @@
 use anyhow::{Context, Result};
-use cpal::traits::StreamTrait;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::asr::AsrEngine;
 use crate::audio::AudioCapture;
@@ -14,6 +13,7 @@ use crate::hotkey::{
     check_accessibility_permission, request_accessibility_permission, HotkeyListener,
 };
 use crate::text_injection::TextInjector;
+use crate::tray::{TrayHandle, TrayIconState};
 
 /// Daemon 事件类型
 #[derive(Debug)]
@@ -23,8 +23,11 @@ pub enum DaemonEvent {
 }
 
 pub struct Daemon {
+    #[allow(dead_code)]
     config: Config,
     state: Arc<Mutex<RecordingState>>,
+    /// 转写/粘贴进行中时忽略新热键，避免竞态
+    is_processing: AtomicBool,
     model_path: PathBuf,
     audio_capture: AudioCapture,
     asr_engine: Mutex<AsrEngine>,
@@ -33,24 +36,31 @@ pub struct Daemon {
     active_stream: Mutex<Option<cpal::Stream>>,
     /// 当前录音缓冲区（与 stream callback 共享）
     recording_buffer: Arc<Mutex<Vec<f32>>>,
+    /// 托盘句柄（Send+Sync，状态更新发回主线程）
+    tray: Option<Arc<TrayHandle>>,
 }
 
 impl Daemon {
-    pub fn new(config: Config, model_path: PathBuf) -> Result<Self> {
-        let audio_capture =
-            AudioCapture::new().context("初始化音频采集器失败")?;
+    pub fn new(
+        config: Config,
+        model_path: PathBuf,
+        tray: Option<Arc<TrayHandle>>,
+    ) -> Result<Self> {
+        let audio_capture = AudioCapture::new().context("初始化音频采集器失败")?;
         let asr_engine = Mutex::new(AsrEngine::new(model_path.clone()));
         let text_injector = TextInjector::new();
 
         Ok(Self {
             config,
             state: Arc::new(Mutex::new(RecordingState::default())),
+            is_processing: AtomicBool::new(false),
             model_path,
             audio_capture,
             asr_engine,
             text_injector,
             active_stream: Mutex::new(None),
             recording_buffer: Arc::new(Mutex::new(Vec::new())),
+            tray,
         })
     }
 
@@ -72,6 +82,14 @@ impl Daemon {
                 asr_status.onnx_exists,
                 asr_status.model_exists,
             );
+        }
+
+        // ── 模型预热（消除首次推理 JIT 开销）──────────────────────────
+        {
+            let warmup_start = std::time::Instant::now();
+            self.asr_engine.lock().unwrap().warmup();
+            let warmup_ms = warmup_start.elapsed().as_millis();
+            info!("模型预热耗时: {}ms", warmup_ms);
         }
 
         // ── 音频设备信息 ──────────────────────────────────────────────
@@ -102,23 +120,39 @@ impl Daemon {
         // ── 就绪提示 ──────────────────────────────────────────────────
         println!();
         println!("✅ Open Flow 已就绪");
-        println!("   音频设备: {}Hz / {} 通道", audio_info.sample_rate, audio_info.channels);
+        println!(
+            "   音频设备: {}Hz / {} 通道",
+            audio_info.sample_rate, audio_info.channels
+        );
         println!("   模型路径: {:?}", self.model_path);
         println!();
         println!("🎙️  按右侧 Command 键开始录音，再按一次停止并转写");
-        println!("   Ctrl+C 退出");
+        println!("   托盘图标可查看状态（灰=待机 红=录音 黄=转写）");
         println!();
 
         // ── 主事件循环 ────────────────────────────────────────────────
-        while let Some(event) = event_rx.recv().await {
-            match event {
-                DaemonEvent::Hotkey(ev) => {
-                    self.handle_hotkey(ev, &event_tx).await;
+        loop {
+            tokio::select! {
+                Some(event) = event_rx.recv() => {
+                    match event {
+                        DaemonEvent::Hotkey(ev) => {
+                            self.handle_hotkey(ev, &event_tx).await;
+                        }
+                        DaemonEvent::TranscriptionComplete(text) => {
+                            self.set_tray(TrayIconState::Idle);
+                            println!("📝 转写完成: {}", text);
+                            if let Err(e) = self.text_injector.inject(&text) {
+                                eprintln!("⚠️  文字注入失败: {e}");
+                            }
+                            self.is_processing.store(false, Ordering::SeqCst);
+                        }
+                    }
                 }
-                DaemonEvent::TranscriptionComplete(text) => {
-                    println!("📝 转写完成: {}", text);
-                    if let Err(e) = self.text_injector.inject(&text) {
-                        eprintln!("⚠️  文字注入失败: {e}");
+                        // daemon 每 200ms 检查托盘退出标志
+                _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                    if self.tray.as_ref().map_or(false, |t| t.exit_requested()) {
+                        println!("👋 托盘退出信号已收到，daemon 即将停止...");
+                        break;
                     }
                 }
             }
@@ -127,19 +161,29 @@ impl Daemon {
         Ok(())
     }
 
-    async fn handle_hotkey(
-        &self,
-        event: HotkeyEvent,
-        tx: &mpsc::Sender<DaemonEvent>,
-    ) {
-        if let HotkeyEvent::Pressed = event {
-            let is_recording = self.state.lock().unwrap().is_recording;
-            if is_recording {
-                if let Err(e) = self.stop_and_transcribe(tx).await {
-                    eprintln!("⚠️  转写失败: {e}");
-                }
-            } else if let Err(e) = self.start_recording() {
+    fn set_tray(&self, state: TrayIconState) {
+        if let Some(ref t) = self.tray {
+            t.set_state(state);
+        }
+    }
+
+    async fn handle_hotkey(&self, _event: HotkeyEvent, tx: &mpsc::Sender<DaemonEvent>) {
+        if self.is_processing.load(Ordering::SeqCst) {
+            return;
+        }
+        let is_recording = self.state.lock().unwrap().is_recording;
+        if is_recording {
+            self.set_tray(TrayIconState::Transcribing);
+            let res = self.stop_and_transcribe(tx).await;
+            if let Err(e) = res {
+                self.set_tray(TrayIconState::Idle);
+                eprintln!("⚠️  转写失败: {e}");
+            }
+        } else {
+            if let Err(e) = self.start_recording() {
                 eprintln!("⚠️  录音启动失败: {e}");
+            } else {
+                self.set_tray(TrayIconState::Recording);
             }
         }
     }
@@ -150,10 +194,8 @@ impl Daemon {
             return Ok(());
         }
 
-        // 清空上次的缓冲区
         self.recording_buffer.lock().unwrap().clear();
 
-        // 创建并启动 cpal 录音流
         let stream = self
             .audio_capture
             .build_live_stream(self.recording_buffer.clone())
@@ -168,6 +210,8 @@ impl Daemon {
     }
 
     async fn stop_and_transcribe(&self, tx: &mpsc::Sender<DaemonEvent>) -> Result<()> {
+        self.is_processing.store(true, Ordering::SeqCst);
+
         let duration = {
             let mut state = self.state.lock().unwrap();
             if !state.is_recording {
@@ -180,7 +224,6 @@ impl Daemon {
                 .unwrap_or_default()
         };
 
-        // drop stream → cpal 停止向 buffer 写数据
         drop(self.active_stream.lock().unwrap().take());
 
         let buffer: Vec<f32> = self.recording_buffer.lock().unwrap().clone();
@@ -191,11 +234,11 @@ impl Daemon {
         );
 
         if buffer.is_empty() {
+            self.is_processing.store(false, Ordering::SeqCst);
             eprintln!("⚠️  录音为空，请检查麦克风权限（系统设置 > 隐私 > 麦克风）");
             return Ok(());
         }
 
-        // 保存临时 WAV
         let audio_path = std::env::temp_dir().join(format!(
             "open-flow-{}.wav",
             std::time::SystemTime::now()
@@ -207,13 +250,20 @@ impl Daemon {
             .save_buffer_to_wav(&buffer, &audio_path)
             .context("保存录音失败")?;
 
-        // 转写（在 blocking 线程里跑，避免阻塞 tokio executor）
         let asr_engine = &self.asr_engine;
-        let result = tokio::task::block_in_place(|| {
-            asr_engine.lock().unwrap().transcribe(&audio_path, Some("auto"))
-        })?;
+        let result = match tokio::task::block_in_place(|| {
+            asr_engine
+                .lock()
+                .unwrap()
+                .transcribe(&audio_path, Some("auto"))
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                self.is_processing.store(false, Ordering::SeqCst);
+                return Err(e);
+            }
+        };
 
-        // 清理临时文件
         let _ = std::fs::remove_file(&audio_path);
 
         tx.send(DaemonEvent::TranscriptionComplete(result.text))
@@ -224,7 +274,11 @@ impl Daemon {
     }
 }
 
-pub async fn run_daemon(config: Config, model_path: PathBuf) -> Result<()> {
-    let daemon = Daemon::new(config, model_path)?;
+pub async fn run_daemon(
+    config: Config,
+    model_path: PathBuf,
+    tray: Option<Arc<TrayHandle>>,
+) -> Result<()> {
+    let daemon = Daemon::new(config, model_path, tray)?;
     daemon.run().await
 }

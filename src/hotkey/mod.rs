@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
-use std::sync::atomic::{AtomicBool, Ordering};
+use anyhow::Result;
+use std::sync::atomic::{Ordering};
 use std::sync::{mpsc::Sender, Arc};
 use std::thread;
 use tracing::{error, info, warn};

@@ -7,7 +7,7 @@ use std::io::BufWriter;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 /// 音频采集器
 pub struct AudioCapture {
