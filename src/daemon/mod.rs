@@ -139,12 +139,13 @@ impl Daemon {
                             self.handle_hotkey(ev, &event_tx).await;
                         }
                         DaemonEvent::TranscriptionComplete(text) => {
+                            // 先清除 processing，避免转写后第一次按 Command 被误忽略
+                            self.is_processing.store(false, Ordering::SeqCst);
                             self.set_tray(TrayIconState::Idle);
                             println!("📝 转写完成: {}", text);
                             if let Err(e) = self.text_injector.inject(&text) {
                                 eprintln!("⚠️  文字注入失败: {e}");
                             }
-                            self.is_processing.store(false, Ordering::SeqCst);
                         }
                     }
                 }

@@ -46,11 +46,14 @@ pub async fn ensure_model_ready(model_override: Option<PathBuf>) -> Result<PathB
         return Ok(p);
     }
 
-    // 2. config 已保存
+    // 2. config 已保存（排除 Shandianshuo 等第三方路径，仅用 open-flow 自己的目录）
     if let Ok(config) = Config::load() {
         if let Some(ref p) = config.model_path {
-            if model_is_ready(p) {
-                return Ok(p.clone());
+            let path_str = p.to_string_lossy();
+            if !path_str.contains("Shandianshuo") && !path_str.contains("shandianshuo") {
+                if model_is_ready(p) {
+                    return Ok(p.clone());
+                }
             }
         }
     }

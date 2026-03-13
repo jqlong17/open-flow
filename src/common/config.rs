@@ -50,7 +50,16 @@ impl Config {
         }
 
         let content = fs::read_to_string(&config_path)?;
-        let config: Config = toml::from_str(&content)?;
+        let mut config: Config = toml::from_str(&content)?;
+
+        // 迁移：移除 Shandianshuo 等第三方路径，仅使用 open-flow 自己的目录
+        if let Some(ref p) = config.model_path {
+            let s = p.to_string_lossy();
+            if s.contains("Shandianshuo") || s.contains("shandianshuo") {
+                config.model_path = None;
+                config.save()?;
+            }
+        }
 
         Ok(config)
     }

@@ -41,7 +41,6 @@ impl TextInjector {
         std::thread::sleep(Duration::from_millis(20));
         release(Key::MetaLeft)?;
 
-        println!("✅ 已粘贴: {}", text);
         Ok(())
     }
 }
