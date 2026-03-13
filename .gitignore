@@ -1,4 +1,5 @@
 /target
+/dist
 /models
 .cursor/hooks/state/
 .cursor/memory/

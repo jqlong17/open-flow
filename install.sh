@@ -79,8 +79,7 @@ fi
 
 echo -e "${GREEN}✓ Open Flow installed successfully!${NC}"
 echo ""
-echo "Next steps:"
-echo "  1. Start (first run auto-downloads model):"
-echo "     open-flow start"
+echo "Starting Open Flow (first run auto-downloads ~230MB model)..."
 echo ""
-echo "  2. Press right Command to record, again to transcribe & paste!"
+export PATH="$INSTALL_DIR:$PATH"
+exec "$INSTALL_DIR/open-flow" start
