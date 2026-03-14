@@ -10,8 +10,19 @@ APP_NAME="Open Flow"
 BUNDLE_ID="com.openflow.open-flow"
 APP_DIR="$REPO_ROOT/dist/${APP_NAME}.app"
 
+# Kill any running open-flow processes before rebuilding
+echo "Stopping any running Open Flow instances..."
+pkill -f "open-flow" 2>/dev/null || true
+pkill -f "OpenFlowSettings" 2>/dev/null || true
+sleep 1
+
 echo "Building release binary..."
 cargo build --release
+
+echo "Building settings app..."
+cd "$REPO_ROOT/settings-app"
+swift build -c release
+cd "$REPO_ROOT"
 
 echo "Creating .app structure..."
 rm -rf "$APP_DIR"
@@ -21,6 +32,10 @@ mkdir -p "$APP_DIR/Contents/Resources"
 # 直接使用 Rust 二进制作为 app 主可执行文件，避免权限记录落在壳脚本上。
 cp "$REPO_ROOT/target/release/$BINARY_NAME" "$APP_DIR/Contents/MacOS/open-flow"
 chmod +x "$APP_DIR/Contents/MacOS/open-flow"
+
+# Settings app helper
+cp "$REPO_ROOT/settings-app/.build/release/OpenFlowSettings" "$APP_DIR/Contents/MacOS/OpenFlowSettings"
+chmod +x "$APP_DIR/Contents/MacOS/OpenFlowSettings"
 
 # 图标
 if [[ -f "$REPO_ROOT/assets/AppIcon.icns" ]]; then
@@ -51,18 +66,25 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>LSUIElement</key>
-	<false/>
+	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Open Flow 需要麦克风权限来录制语音并进行实时转写。</string>
+	<string>Open Flow needs microphone access to record audio for real-time speech-to-text transcription.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Open Flow 使用本地语音识别模型将语音转写为文字。</string>
+	<string>Open Flow uses a local speech recognition model to transcribe voice to text.</string>
+	<key>NSAccessibilityUsageDescription</key>
+	<string>Open Flow needs accessibility permission to detect global hotkeys and inject text.</string>
 </dict>
 </plist>
 EOF
 
 echo "Ad-hoc signing app bundle..."
+# Use --identifier to keep a stable identity across rebuilds (preserves TCC permissions)
+codesign --force --deep --sign - --identifier "${BUNDLE_ID}" "$APP_DIR/Contents/MacOS/open-flow"
+codesign --force --deep --sign - --identifier "${BUNDLE_ID}.settings" "$APP_DIR/Contents/MacOS/OpenFlowSettings"
 codesign --force --deep --sign - "$APP_DIR"
 
 echo "Done: $APP_DIR"
 echo "  Double-click to run (same as: open-flow start --foreground)"
-echo "  Optional: copy to /Applications for system-wide use"
+echo ""
+echo "  ⚡ To preserve permissions across rebuilds, install to /Applications:"
+echo "     cp -R \"$APP_DIR\" /Applications/"

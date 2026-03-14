@@ -203,6 +203,12 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
         tracing::info!("✅ 浮动指示器已创建");
     }
 
+    // ── Settings app 路径（与主二进制同目录）──────────────────────
+    let settings_app_path = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join("OpenFlowSettings")))
+        .filter(|p| p.exists());
+
     // ── 构建 ASR provider ──────────────────────────────────────────
     let config = Config::load().unwrap_or_default();
     let provider: Arc<dyn AsrProvider> = match config.provider.as_str() {
@@ -252,7 +258,7 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     });
 
     // ── 主线程：驱动 macOS NSRunLoop，让托盘 / 菜单事件得以分发 ──────
-    run_main_loop(tray.as_ref(), overlay.as_ref(), &overlay_rx, &daemon_alive);
+    run_main_loop(tray.as_ref(), overlay.as_ref(), &overlay_rx, settings_app_path.as_deref(), &daemon_alive);
 
     // ── 退出前显式隐藏菜单栏图标并 pump run loop，避免图标残留
     if let Some(ref t) = tray {
@@ -288,6 +294,7 @@ fn run_main_loop(
     tray: Option<&TrayState>,
     overlay: Option<&crate::overlay::OverlayWindow>,
     overlay_rx: &std::sync::mpsc::Receiver<TrayIconState>,
+    settings_app_path: Option<&std::path::Path>,
     daemon_alive: &AtomicBool,
 ) {
     loop {
@@ -304,12 +311,21 @@ fn run_main_loop(
             }
         }
 
-        // 驱动平台事件循环：macOS NSRunLoop；Windows Win32；Linux glib
+        // 驱动平台事件循环：macOS NSRunLoop
         #[cfg(target_os = "macos")]
         pump_run_loop_100ms();
 
         #[cfg(not(target_os = "macos"))]
         std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // 托盘菜单「偏好设置...」-> 启动 SwiftUI 设置应用
+        if tray.map_or(false, |t| t.prefs_requested()) {
+            if let Some(path) = settings_app_path {
+                let _ = std::process::Command::new(path).spawn();
+            } else {
+                tracing::warn!("设置应用未找到");
+            }
+        }
 
         // 托盘菜单「退出」
         if tray.map_or(false, |t| t.exit_requested()) {
