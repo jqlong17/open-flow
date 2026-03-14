@@ -1,11 +1,10 @@
 use anyhow::{Context, Result};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::info;
 
-use crate::asr::AsrEngine;
+use crate::asr::AsrProvider;
 use crate::audio::AudioCapture;
 use crate::common::types::{HotkeyEvent, RecordingState};
 use crate::hotkey::{
@@ -29,9 +28,8 @@ pub struct Daemon {
     is_processing: AtomicBool,
     /// 已收到的热键事件次数（用于日志：第 N 次按键）
     hotkey_recv_count: std::sync::atomic::AtomicU64,
-    model_path: PathBuf,
     audio_capture: AudioCapture,
-    asr_engine: Arc<Mutex<AsrEngine>>,
+    provider: Arc<dyn AsrProvider>,
     text_injector: TextInjector,
     /// 当前录音流（Some = 正在录音，drop 即停止）
     active_stream: Mutex<Option<cpal::Stream>>,
@@ -39,28 +37,30 @@ pub struct Daemon {
     recording_buffer: Mutex<Arc<Mutex<Vec<f32>>>>,
     /// 托盘句柄（Send+Sync，状态更新发回主线程）
     tray: Option<Arc<TrayHandle>>,
+    /// 触发模式: "toggle" or "hold"
+    trigger_mode: String,
 }
 
 impl Daemon {
     pub fn new(
-        model_path: PathBuf,
+        provider: Arc<dyn AsrProvider>,
         tray: Option<Arc<TrayHandle>>,
     ) -> Result<Self> {
         let audio_capture = AudioCapture::new().context("初始化音频采集器失败")?;
-        let asr_engine = Arc::new(Mutex::new(AsrEngine::new(model_path.clone())));
         let text_injector = TextInjector::new();
+        let config = crate::common::config::Config::load().unwrap_or_default();
 
         Ok(Self {
             state: Arc::new(Mutex::new(RecordingState::default())),
             is_processing: AtomicBool::new(false),
             hotkey_recv_count: std::sync::atomic::AtomicU64::new(0),
-            model_path,
             audio_capture,
-            asr_engine,
+            provider,
             text_injector,
             active_stream: Mutex::new(None),
             recording_buffer: Mutex::new(Arc::new(Mutex::new(Vec::new()))),
             tray,
+            trigger_mode: config.trigger_mode,
         })
     }
 
@@ -81,63 +81,50 @@ impl Daemon {
         println!("   Accessibility: {}", accessibility_ok);
         println!("   Input Monitoring: {}", input_monitoring_ok);
         println!("   Microphone: {}", microphone_ok);
-        if !microphone_ok {
-            println!();
-            println!("⚠️  缺少麦克风权限！录音将为静音，无法转写。");
-            println!("   请前往：系统设置 > 隐私与安全性 > 麦克风");
-            println!("   将 Open Flow.app 添加并启用，然后完全退出并重新打开。");
-        }
 
-        // ── Accessibility 权限检查 ───────────────────────────────────
+        // 请求缺失的权限（触发系统对话框）
         if !accessibility_ok {
-            warn!("Accessibility 权限检查失败，可能是 TCC 将当前可执行文件识别为新身份");
-            request_accessibility_permission();
             println!();
-            println!("授权后请完全退出并重新打开 Open Flow。");
-            anyhow::bail!("缺少 Accessibility 权限");
+            println!("⚠️  Accessibility 权限未授权——正在请求...");
+            request_accessibility_permission();
         }
         if !input_monitoring_ok {
-            warn!("Input Monitoring 权限检查失败，可能是 TCC 将当前可执行文件识别为新身份");
-            crate::hotkey::request_input_monitoring_permission();
             println!();
-            println!("授权后请完全退出并重新打开 Open Flow。");
-            anyhow::bail!("缺少 Input Monitoring 权限");
+            println!("⚠️  Input Monitoring 权限未授权——正在请求...");
+            crate::hotkey::request_input_monitoring_permission();
+        }
+        if !microphone_ok {
+            println!();
+            println!("⚠️  麦克风权限尚未授权。");
+            crate::hotkey::request_microphone_permission();
         }
 
-        // ── ASR 状态 ─────────────────────────────────────────────────
-        let asr_status = self.asr_engine.lock().unwrap().check_status();
-        if !asr_status.ready {
-            let hint = asr_status
-                .load_error
-                .as_deref()
-                .unwrap_or("（无详细错误，请查看日志）");
-            let known_fix = if hint.contains("tensor(int64)") && hint.contains("tensor(int32)") {
-                "\n  建议: 若加载失败可尝试切换预设: open-flow model use quantized 或 open-flow model use fp16"
-            } else {
-                ""
-            };
-            anyhow::bail!(
-                "模型未就绪：{:?}\n  原因: {}{}",
-                asr_status.model_path,
-                hint,
-                known_fix
-            );
+        if !accessibility_ok || !input_monitoring_ok {
+            println!();
+            println!("⏳ 等待权限授权... 请在系统设置中授权，然后应用将重试。");
+            println!("   （如果授权后热键不工作，请重启应用）");
         }
 
-        // ── 模型预热（消除首次推理 JIT 开销）──────────────────────────
+        // ── Provider 状态检查 ──────────────────────────────────────────
+        if let Err(e) = self.provider.check_status() {
+            anyhow::bail!("Provider 未就绪: {}", e);
+        }
+
+        // ── Provider 预热（消除首次推理 JIT 开销）──────────────────────
         {
             let warmup_start = std::time::Instant::now();
-            self.asr_engine.lock().unwrap().warmup();
+            self.provider.warmup().await?;
             let warmup_ms = warmup_start.elapsed().as_millis();
-            info!("模型预热耗时: {}ms", warmup_ms);
+            info!("Provider 预热耗时: {}ms", warmup_ms);
         }
 
         // ── 音频设备信息 ──────────────────────────────────────────────
         let audio_info = self.audio_capture.get_info();
 
         // ── 启动热键监听器 ─────────────────────────────────────────────
+        let config = crate::common::config::Config::load().unwrap_or_default();
         let (hotkey_tx, hotkey_rx) = std::sync::mpsc::channel();
-        let listener = HotkeyListener::new(hotkey_tx);
+        let listener = HotkeyListener::new(hotkey_tx, config.hotkey.clone());
         listener.start().context("启动热键监听器失败")?;
 
         // ── 把同步 mpsc 桥接到 tokio mpsc ─────────────────────────────
@@ -168,12 +155,9 @@ impl Daemon {
             "   音频设备: {}Hz / {} 通道",
             audio_info.sample_rate, audio_info.channels
         );
-        println!("   模型路径: {:?}", self.model_path);
+        println!("   Provider: {}", self.provider.name());
         println!();
-        #[cfg(target_os = "macos")]
-        println!("🎙️  按右侧 Command 键开始录音，再按一次停止并转写");
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
-        println!("🎙️  按右侧 Alt 键开始录音，再按一次停止并转写");
+        println!("🎙️  按热键开始录音，再按一次停止并转写");
         println!("   托盘图标可查看状态（灰=待机 红=录音 黄=转写）");
         println!();
 
@@ -186,11 +170,10 @@ impl Daemon {
                             self.handle_hotkey(ev, &event_tx).await;
                         }
                         DaemonEvent::TranscriptionComplete(text) => {
+                            self.is_processing.store(false, Ordering::SeqCst);
                             self.set_tray(TrayIconState::Idle);
                             println!("📝 转写完成: {}", text);
-                            // 延迟 250ms 再粘贴，避免与用户紧接着的「第三次按键」重叠：
-                            // inject 模拟左 Command+V 会干扰 CGEventTap，导致右 Command 的 KeyPress 丢失、只收到 Release
-                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                             info!("[Hotkey] 开始粘贴");
                             if let Err(e) = self.text_injector.inject(&text).await {
                                 eprintln!("⚠️  文字注入失败: {e}");
@@ -222,32 +205,61 @@ impl Daemon {
         }
     }
 
-    async fn handle_hotkey(&self, _event: HotkeyEvent, tx: &mpsc::Sender<DaemonEvent>) {
+    async fn handle_hotkey(&self, event: HotkeyEvent, tx: &mpsc::Sender<DaemonEvent>) {
         let n = self.hotkey_recv_count.fetch_add(1, Ordering::SeqCst) + 1;
         let is_processing = self.is_processing.load(Ordering::SeqCst);
         let is_recording = self.state.lock().unwrap().is_recording;
         info!(
-            "[Hotkey] 收到第 {} 次按键 is_recording={} is_processing={}",
-            n, is_recording, is_processing
+            "[Hotkey] 收到第 {} 次按键 event={:?} is_recording={} is_processing={} mode={}",
+            n, event, is_recording, is_processing, self.trigger_mode
         );
-        if is_processing {
-            info!("[Hotkey] 第 {} 次 -> 忽略（转写中）", n);
-            return;
-        }
-        if is_recording {
-            info!("[Hotkey] 第 {} 次 -> 动作: 停止录音并转写", n);
-            self.set_tray(TrayIconState::Transcribing);
-            let res = self.stop_and_transcribe(tx).await;
-            if let Err(e) = res {
-                self.set_tray(TrayIconState::Idle);
-                eprintln!("⚠️  转写失败: {e}");
+
+        match event {
+            HotkeyEvent::Pressed => {
+                if is_processing {
+                    info!("[Hotkey] 第 {} 次 -> 忽略（转写中）", n);
+                    return;
+                }
+                if self.trigger_mode == "hold" {
+                    // Hold 模式: Pressed 始终开始录音
+                    if !is_recording {
+                        info!("[Hotkey] 第 {} 次 -> 动作: 开始录音（hold 模式）", n);
+                        if let Err(e) = self.start_recording() {
+                            eprintln!("⚠️  录音启动失败: {e}");
+                        } else {
+                            self.set_tray(TrayIconState::Recording);
+                        }
+                    }
+                } else {
+                    // Toggle 模式: Pressed 切换状态
+                    if is_recording {
+                        info!("[Hotkey] 第 {} 次 -> 动作: 停止录音并转写（toggle 模式）", n);
+                        self.set_tray(TrayIconState::Transcribing);
+                        if let Err(e) = self.stop_and_transcribe(tx).await {
+                            self.set_tray(TrayIconState::Idle);
+                            eprintln!("⚠️  转写失败: {e}");
+                        }
+                    } else {
+                        info!("[Hotkey] 第 {} 次 -> 动作: 开始录音（toggle 模式）", n);
+                        if let Err(e) = self.start_recording() {
+                            eprintln!("⚠️  录音启动失败: {e}");
+                        } else {
+                            self.set_tray(TrayIconState::Recording);
+                        }
+                    }
+                }
             }
-        } else {
-            info!("[Hotkey] 第 {} 次 -> 动作: 开始录音", n);
-            if let Err(e) = self.start_recording() {
-                eprintln!("⚠️  录音启动失败: {e}");
-            } else {
-                self.set_tray(TrayIconState::Recording);
+            HotkeyEvent::Released => {
+                if self.trigger_mode == "hold" && is_recording {
+                    // Hold 模式: Released 始终停止
+                    info!("[Hotkey] 第 {} 次 -> 动作: 停止录音并转写（hold 松开）", n);
+                    self.set_tray(TrayIconState::Transcribing);
+                    if let Err(e) = self.stop_and_transcribe(tx).await {
+                        self.set_tray(TrayIconState::Idle);
+                        eprintln!("⚠️  转写失败: {e}");
+                    }
+                }
+                // Toggle 模式: Released 忽略
             }
         }
     }
@@ -271,10 +283,7 @@ impl Daemon {
         state.start_time = Some(std::time::Instant::now());
 
         info!("[Hotkey] 录音已启动");
-        #[cfg(target_os = "macos")]
-        println!("🔴 录音中... 再按右侧 Command 键停止");
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
-        println!("🔴 录音中... 再按右侧 Alt 键停止");
+        println!("🔴 录音中... 再按热键停止");
         Ok(())
     }
 
@@ -328,23 +337,21 @@ impl Daemon {
             return Ok(());
         }
 
-        // 直接把内存中的 PCM 数据送给 ASR，不经过磁盘文件
+        // 通过 AsrProvider trait 进行转写（本地或云端）
         let sample_rate = self.audio_capture.get_info().sample_rate;
-        let asr_engine = self.asr_engine.clone();
-        let infer_fut = tokio::task::spawn_blocking(move || {
-            asr_engine
-                .lock()
-                .unwrap()
-                .transcribe_pcm(&buffer, sample_rate)
-        });
+        let provider = self.provider.clone();
 
-        let join_result = match tokio::time::timeout(
+        let result = match tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            infer_fut,
+            provider.transcribe(&buffer, sample_rate),
         )
         .await
         {
-            Ok(r) => r,
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                self.is_processing.store(false, Ordering::SeqCst);
+                return Err(e);
+            }
             Err(_elapsed) => {
                 self.is_processing.store(false, Ordering::SeqCst);
                 eprintln!("⚠️  转写超时（>30s），已放弃，请检查模型或重启 daemon");
@@ -352,23 +359,6 @@ impl Daemon {
             }
         };
 
-        let result = match join_result {
-            Ok(r) => r,
-            Err(e) => {
-                self.is_processing.store(false, Ordering::SeqCst);
-                return Err(anyhow::anyhow!("spawn_blocking failed: {}", e));
-            }
-        };
-        let result = match result {
-            Ok(r) => r,
-            Err(e) => {
-                self.is_processing.store(false, Ordering::SeqCst);
-                return Err(e);
-            }
-        };
-
-        // 在发送前清除，避免：Hotkey(P3) 先于 TranscriptionComplete 被处理时被误忽略
-        self.is_processing.store(false, Ordering::SeqCst);
         tx.send(DaemonEvent::TranscriptionComplete(result.text))
             .await
             .ok();
@@ -378,9 +368,9 @@ impl Daemon {
 }
 
 pub async fn run_daemon(
-    model_path: PathBuf,
+    provider: Arc<dyn AsrProvider>,
     tray: Option<Arc<TrayHandle>>,
 ) -> Result<()> {
-    let daemon = Daemon::new(model_path, tray)?;
+    let daemon = Daemon::new(provider, tray)?;
     daemon.run().await
 }

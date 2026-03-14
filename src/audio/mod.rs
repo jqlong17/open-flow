@@ -230,13 +230,23 @@ impl AudioCapture {
             error!("❌ 音频采集错误: {}", err);
         };
 
+        let channels = self.channels as usize;
+
         let stream = match self.sample_format {
             SampleFormat::F32 => {
                 let buf = buffer.clone();
                 self.device.build_input_stream(
                     &self.config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        buf.lock().unwrap().extend_from_slice(data);
+                        if let Ok(mut b) = buf.lock() {
+                            if channels > 1 {
+                                for chunk in data.chunks(channels) {
+                                    b.push(chunk.iter().sum::<f32>() / channels as f32);
+                                }
+                            } else {
+                                b.extend_from_slice(data);
+                            }
+                        }
                     },
                     err_fn,
                     None,
@@ -247,9 +257,15 @@ impl AudioCapture {
                 self.device.build_input_stream(
                     &self.config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        let mut b = buf.lock().unwrap();
-                        for &s in data {
-                            b.push(s as f32 / 32768.0);
+                        if let Ok(mut b) = buf.lock() {
+                            if channels > 1 {
+                                for chunk in data.chunks(channels) {
+                                    let mixed = chunk.iter().map(|&s| s as f32 / 32768.0).sum::<f32>() / channels as f32;
+                                    b.push(mixed);
+                                }
+                            } else {
+                                b.extend(data.iter().map(|&s| s as f32 / 32768.0));
+                            }
                         }
                     },
                     err_fn,
@@ -261,9 +277,15 @@ impl AudioCapture {
                 self.device.build_input_stream(
                     &self.config,
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
-                        let mut b = buf.lock().unwrap();
-                        for &s in data {
-                            b.push((s as f32 - 32768.0) / 32768.0);
+                        if let Ok(mut b) = buf.lock() {
+                            if channels > 1 {
+                                for chunk in data.chunks(channels) {
+                                    let mixed = chunk.iter().map(|&s| (s as f32 - 32768.0) / 32768.0).sum::<f32>() / channels as f32;
+                                    b.push(mixed);
+                                }
+                            } else {
+                                b.extend(data.iter().map(|&s| (s as f32 - 32768.0) / 32768.0));
+                            }
                         }
                     },
                     err_fn,

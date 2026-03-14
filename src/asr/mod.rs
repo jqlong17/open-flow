@@ -1,9 +1,12 @@
 pub mod decoder;
+pub mod groq;
 pub mod onnx_inference;
 pub mod preprocess;
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -11,6 +14,26 @@ use crate::asr::decoder::CTCDecoder;
 use crate::asr::onnx_inference::OnnxInference;
 use crate::asr::preprocess::{AudioPreprocessor, TARGET_SAMPLE_RATE};
 use crate::common::types::TranscriptionResult;
+
+/// Trait abstracting speech recognition backends (local ONNX vs cloud API).
+#[async_trait]
+pub trait AsrProvider: Send + Sync {
+    /// Transcribe PCM audio samples. Returns transcribed text.
+    async fn transcribe(&self, audio: &[f32], sample_rate: u32) -> Result<TranscriptionResult>;
+
+    /// Optional warmup (e.g. load model, establish connection). Default no-op.
+    async fn warmup(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Check provider readiness. Returns human-readable status string on success.
+    fn check_status(&self) -> Result<String> {
+        Ok("ready".into())
+    }
+
+    /// Provider name for display purposes.
+    fn name(&self) -> &str;
+}
 
 /// 调试与调参用环境变量（可开关）：
 /// - OPEN_FLOW_DEBUG_ASR: 打印 features shape、encoder_out_lens、logits 首/中/末帧 top-k 及 non_blank 帧数
@@ -326,6 +349,61 @@ pub struct AsrStatus {
     pub ready: bool,
     /// 若 ready=false，可能为加载失败原因
     pub load_error: Option<String>,
+}
+
+/// Local ASR provider wrapping the existing ONNX-based AsrEngine.
+/// Uses Arc<Mutex<>> so the engine can be moved into spawn_blocking.
+pub struct LocalAsrProvider {
+    engine: Arc<Mutex<AsrEngine>>,
+}
+
+impl LocalAsrProvider {
+    pub fn new(model_path: PathBuf) -> Self {
+        Self {
+            engine: Arc::new(Mutex::new(AsrEngine::new(model_path))),
+        }
+    }
+}
+
+#[async_trait]
+impl AsrProvider for LocalAsrProvider {
+    async fn transcribe(&self, audio: &[f32], sample_rate: u32) -> Result<TranscriptionResult> {
+        let audio = audio.to_vec();
+        let engine = self.engine.clone();
+        tokio::task::spawn_blocking(move || {
+            engine.lock().unwrap().transcribe_pcm(&audio, sample_rate)
+        })
+        .await
+        .context("spawn_blocking failed")?
+    }
+
+    async fn warmup(&self) -> Result<()> {
+        let engine = self.engine.clone();
+        tokio::task::spawn_blocking(move || {
+            engine.lock().unwrap().warmup();
+        })
+        .await
+        .context("warmup spawn_blocking failed")?;
+        Ok(())
+    }
+
+    fn check_status(&self) -> Result<String> {
+        let status = self.engine.lock().unwrap().check_status();
+        if status.ready {
+            Ok("ready".into())
+        } else {
+            anyhow::bail!(
+                "Model not ready: {:?} (onnx={}, model={})",
+                status.model_path,
+                status.onnx_exists,
+                status.model_exists
+            )
+        }
+    }
+
+    fn name(&self) -> &str {
+        "local (SenseVoice)"
+    }
 }
 
 #[cfg(test)]
