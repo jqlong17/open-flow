@@ -83,79 +83,57 @@ open-flow start
 
 ### Linux
 
-Linux 版目前需要从源码构建，支持 CLI 模式（无托盘图标）。
+Linux 版支持 CLI 模式（无托盘图标）。可选：一键安装预编译包，或从源码构建。
 
-**1. 安装系统依赖**
+**一键安装（预编译，x86_64）**
+
+在终端执行（下载并解压到 `~/.local/bin`，并写入 PATH）：
 
 ```bash
-# Ubuntu / Debian
-sudo apt install libasound2-dev xdotool    # X11
-# 或 Wayland 用户
-sudo apt install libasound2-dev wtype
-
-# Fedora / RHEL
-sudo dnf install alsa-lib-devel xdotool
+mkdir -p ~/.local/bin && curl -sSL https://github.com/jqlong17/open-flow/releases/latest/download/open-flow-x86_64-unknown-linux-gnu.tar.gz | tar -xzf - -C ~/.local/bin && chmod +x ~/.local/bin/open-flow && (grep -q '.local/bin' ~/.bashrc 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc) && echo '安装完成。执行 source ~/.bashrc 或重新打开终端，然后运行: open-flow start --foreground'
 ```
 
-**2. 安装 Rust 工具链**（已安装可跳过）
+安装后运行 `open-flow start --foreground`，首次会自动下载 ~230MB 模型。热键为**右 Meta（Super）键**，粘贴需安装 xdotool（X11）或 wtype（Wayland）。
+
+**从源码构建**（需先安装系统依赖与 Rust）
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-```
+# Ubuntu / Debian：系统依赖
+sudo apt install libasound2-dev xdotool    # X11；Wayland 用户可装 wtype
 
-**3. 克隆并编译**
+# 安装 Rust（已安装可跳过）
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh && source ~/.cargo/env
 
-```bash
-git clone https://github.com/jqlong17/open-flow.git
-cd open-flow
+# 克隆并编译
+git clone https://github.com/jqlong17/open-flow.git && cd open-flow
 cargo build --release
 sudo cp target/release/open-flow /usr/local/bin/
 ```
 
-**4. 首次运行（下载模型并启动）**
-
-```bash
-open-flow start
-```
-
-首次运行自动下载 ~230MB 模型。之后按右侧 Meta（Super）键开始录音，再按一次停止并将转写文字粘贴到当前输入框。
-
-> **注意**：Linux 上全局热键监听需要读取输入设备权限。如遇权限不足，将当前用户加入 `input` 组：
-> ```bash
-> sudo usermod -aG input $USER   # 重新登录后生效
-> ```
+> **注意**：Linux 上全局热键监听需要读取输入设备权限。如遇权限不足，将当前用户加入 `input` 组：`sudo usermod -aG input $USER`（重新登录后生效）。
 
 ### Windows
 
 Windows 版仅提供 **CLI 模式**（无托盘图标）。转写结果会写入剪贴板，需在目标窗口按 **Ctrl+V** 粘贴。
 
-**1. 安装 Rust 工具链**
+**一键安装（PowerShell，预编译）**
+
+在 **PowerShell** 中执行（下载并解压到 `%LOCALAPPDATA%\Programs\open-flow`，并加入用户 PATH）：
 
 ```powershell
-# 安装 Rust（若已安装可跳过）
-# 从 https://rustup.rs/ 下载并运行 rustup-init.exe，或：
-winget install Rustlang.Rustup
-# 安装完成后重启终端
+$url = "https://github.com/jqlong17/open-flow/releases/latest/download/open-flow-x86_64-pc-windows-msvc.zip"; $dir = "$env:LOCALAPPDATA\Programs\open-flow"; New-Item -ItemType Directory -Force -Path $dir | Out-Null; Invoke-WebRequest -Uri $url -OutFile "$dir\open-flow.zip" -UseBasicParsing; Expand-Archive -Path "$dir\open-flow.zip" -DestinationPath $dir -Force; Remove-Item "$dir\open-flow.zip"; $path = [Environment]::GetEnvironmentVariable("Path", "User"); if ($path -notlike "*$dir*") { [Environment]::SetEnvironmentVariable("Path", "$path;$dir", "User"); Write-Host "已把 $dir 加入 PATH，请关闭并重新打开终端后生效。" }; Write-Host "安装完成。运行: open-flow.exe start --foreground"
 ```
 
-**2. 克隆并编译**
+安装后**关闭并重新打开终端**，运行 `open-flow.exe start --foreground`。首次运行会自动下载约 230MB 模型。热键为 **右侧 Win 键**，转写结果在剪贴板，在任意输入框按 **Ctrl+V** 粘贴。
+
+**从源码构建**（需先安装 [Rust](https://rustup.rs/)）
 
 ```powershell
 git clone https://github.com/jqlong17/open-flow.git
 cd open-flow
 cargo build --release
+# 二进制在 target\release\open-flow.exe，可加入 PATH 或复制到常用目录
 ```
-
-生成的二进制在 `target\release\open-flow.exe`，可加入 PATH 或复制到常用目录。
-
-**3. 首次运行（下载模型并启动）**
-
-```powershell
-.\target\release\open-flow.exe start --foreground
-```
-
-首次运行会自动下载约 230MB 模型。热键为 **右侧 Win 键**：按一下开始录音，再按一下停止并转写，转写结果在剪贴板，在任意输入框按 **Ctrl+V** 粘贴。
 
 **常用命令**
 

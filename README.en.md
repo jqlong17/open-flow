@@ -83,74 +83,57 @@ First run downloads the model from [Hugging Face](https://huggingface.co/haixuan
 
 ### Linux
 
-Linux is supported in CLI mode (no tray icon). Build from source:
+Linux is supported in CLI mode (no tray icon). One-line install (prebuilt) or build from source.
 
-**1. Install system dependencies**
+**One-line install (prebuilt, x86_64)**
+
+Run in a terminal (downloads and extracts to `~/.local/bin`, adds to PATH):
 
 ```bash
-# Ubuntu / Debian
-sudo apt install libasound2-dev xdotool    # X11
-# or Wayland
-sudo apt install libasound2-dev wtype
-
-# Fedora / RHEL
-sudo dnf install alsa-lib-devel xdotool
+mkdir -p ~/.local/bin && curl -sSL https://github.com/jqlong17/open-flow/releases/latest/download/open-flow-x86_64-unknown-linux-gnu.tar.gz | tar -xzf - -C ~/.local/bin && chmod +x ~/.local/bin/open-flow && (grep -q '.local/bin' ~/.bashrc 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc) && echo 'Done. Run source ~/.bashrc or open a new terminal, then: open-flow start --foreground'
 ```
 
-**2. Install Rust** (skip if already installed)
+Then run `open-flow start --foreground`. First run downloads ~230MB model. Hotkey: **Right Meta (Super)**; for paste, install xdotool (X11) or wtype (Wayland).
+
+**Build from source** (install system deps and Rust first)
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-```
+# Ubuntu / Debian: system deps
+sudo apt install libasound2-dev xdotool    # X11; or wtype for Wayland
 
-**3. Clone and build**
+# Install Rust (skip if installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh && source ~/.cargo/env
 
-```bash
-git clone https://github.com/jqlong17/open-flow.git
-cd open-flow
+# Clone and build
+git clone https://github.com/jqlong17/open-flow.git && cd open-flow
 cargo build --release
 sudo cp target/release/open-flow /usr/local/bin/
 ```
 
-**4. First run** (downloads model and starts)
-
-```bash
-open-flow start
-```
-
-Downloads ~230MB model on first run. Then press Right Meta (Super) to record, press again to stop and paste the transcription into the focused input field.
-
-> **Note**: Global hotkey listening requires access to input devices. If you get a permission error, add your user to the `input` group:
-> ```bash
-> sudo usermod -aG input $USER   # re-login to take effect
-> ```
+> **Note**: Global hotkey needs input device access. If you get a permission error: `sudo usermod -aG input $USER` (re-login to take effect).
 
 ### Windows
 
 Windows is supported in **CLI mode only** (no tray icon). Transcription is copied to the clipboard; press **Ctrl+V** in the target window to paste.
 
-**1. Install Rust** (skip if already installed)
+**One-line install (PowerShell, prebuilt)**
 
-Install from [rustup.rs](https://rustup.rs/) or e.g. `winget install Rustlang.Rustup`, then restart the terminal.
+Run in **PowerShell** (downloads and extracts to `%LOCALAPPDATA%\Programs\open-flow`, adds to user PATH):
 
-**2. Clone and build**
+```powershell
+$url = "https://github.com/jqlong17/open-flow/releases/latest/download/open-flow-x86_64-pc-windows-msvc.zip"; $dir = "$env:LOCALAPPDATA\Programs\open-flow"; New-Item -ItemType Directory -Force -Path $dir | Out-Null; Invoke-WebRequest -Uri $url -OutFile "$dir\open-flow.zip" -UseBasicParsing; Expand-Archive -Path "$dir\open-flow.zip" -DestinationPath $dir -Force; Remove-Item "$dir\open-flow.zip"; $path = [Environment]::GetEnvironmentVariable("Path", "User"); if ($path -notlike "*$dir*") { [Environment]::SetEnvironmentVariable("Path", "$path;$dir", "User"); Write-Host "Added $dir to PATH. Close and reopen the terminal." }; Write-Host "Done. Run: open-flow.exe start --foreground"
+```
+
+Close and reopen the terminal, then run `open-flow.exe start --foreground`. First run downloads ~230MB model. Hotkey: **Right Win key**; result in clipboard, **Ctrl+V** to paste.
+
+**Build from source** (install [Rust](https://rustup.rs/) first)
 
 ```powershell
 git clone https://github.com/jqlong17/open-flow.git
 cd open-flow
 cargo build --release
+# Binary at target\release\open-flow.exe; add to PATH or copy to a folder in PATH
 ```
-
-Binary: `target\release\open-flow.exe`. Add to PATH or copy to a folder in PATH.
-
-**3. First run** (downloads model and starts)
-
-```powershell
-.\target\release\open-flow.exe start --foreground
-```
-
-First run downloads ~230MB model. Hotkey: **Right Win key** — press to start recording, press again to stop and transcribe; result is in the clipboard, press **Ctrl+V** to paste.
 
 | Command | Description |
 |---------|-------------|
