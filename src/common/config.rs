@@ -10,30 +10,12 @@ const CONFIG_FILE: &str = "config.toml";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub model_path: Option<PathBuf>,
-    pub hotkey: String,
-    pub output_mode: OutputMode,
-    pub language: String,
-    pub auto_paste: bool,
-    pub clipboard_restore: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OutputMode {
-    Stdout,
-    Clipboard,
-    Paste,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             model_path: None,
-            hotkey: "right-command".to_string(),
-            output_mode: OutputMode::Paste,
-            language: "auto".to_string(),
-            auto_paste: true,
-            clipboard_restore: true,
         }
     }
 }

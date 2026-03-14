@@ -7,7 +7,6 @@ use tracing::info;
 
 use crate::asr::AsrEngine;
 use crate::audio::AudioCapture;
-use crate::common::config::Config;
 use crate::common::types::{HotkeyEvent, RecordingState};
 use crate::hotkey::{
     check_accessibility_permission, request_accessibility_permission, HotkeyListener,
@@ -20,11 +19,11 @@ use crate::tray::{TrayHandle, TrayIconState};
 pub enum DaemonEvent {
     Hotkey(HotkeyEvent),
     TranscriptionComplete(String),
+    /// 热键监听线程已退出（崩溃或 channel 断开），daemon 应停止
+    HotkeyListenerDead,
 }
 
 pub struct Daemon {
-    #[allow(dead_code)]
-    config: Config,
     state: Arc<Mutex<RecordingState>>,
     /// 转写/粘贴进行中时忽略新热键，避免竞态
     is_processing: AtomicBool,
@@ -44,7 +43,6 @@ pub struct Daemon {
 
 impl Daemon {
     pub fn new(
-        config: Config,
         model_path: PathBuf,
         tray: Option<Arc<TrayHandle>>,
     ) -> Result<Self> {
@@ -53,7 +51,6 @@ impl Daemon {
         let text_injector = TextInjector::new();
 
         Ok(Self {
-            config,
             state: Arc::new(Mutex::new(RecordingState::default())),
             is_processing: AtomicBool::new(false),
             hotkey_recv_count: std::sync::atomic::AtomicU64::new(0),
@@ -116,7 +113,11 @@ impl Daemon {
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(_) => {
+                    // hotkey 监听线程已退出（channel sender 被 drop），通知主循环
+                    let _ = event_tx_clone.blocking_send(DaemonEvent::HotkeyListenerDead);
+                    break;
+                }
             }
         });
 
@@ -148,10 +149,14 @@ impl Daemon {
                             // inject 模拟左 Command+V 会干扰 CGEventTap，导致右 Command 的 KeyPress 丢失、只收到 Release
                             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                             info!("[Hotkey] 开始粘贴");
-                            if let Err(e) = self.text_injector.inject(&text) {
+                            if let Err(e) = self.text_injector.inject(&text).await {
                                 eprintln!("⚠️  文字注入失败: {e}");
                             }
                             info!("[Hotkey] 粘贴结束");
+                        }
+                        DaemonEvent::HotkeyListenerDead => {
+                            eprintln!("❌ 热键监听线程已退出，daemon 停止。请运行 open-flow start 重启。");
+                            break;
                         }
                     }
                 }
@@ -265,27 +270,31 @@ impl Daemon {
             return Ok(());
         }
 
-        let audio_path = std::env::temp_dir().join(format!(
-            "open-flow-{}.wav",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-        ));
-        self.audio_capture
-            .save_buffer_to_wav(&buffer, &audio_path)
-            .context("保存录音失败")?;
-
+        // 直接把内存中的 PCM 数据送给 ASR，不经过磁盘文件
+        let sample_rate = self.audio_capture.get_info().sample_rate;
         let asr_engine = self.asr_engine.clone();
-        let audio_path_clone = audio_path.clone();
-        let result = match tokio::task::spawn_blocking(move || {
+        let infer_fut = tokio::task::spawn_blocking(move || {
             asr_engine
                 .lock()
                 .unwrap()
-                .transcribe(&audio_path_clone, Some("auto"))
-        })
+                .transcribe_pcm(&buffer, sample_rate)
+        });
+
+        let join_result = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            infer_fut,
+        )
         .await
         {
+            Ok(r) => r,
+            Err(_elapsed) => {
+                self.is_processing.store(false, Ordering::SeqCst);
+                eprintln!("⚠️  转写超时（>30s），已放弃，请检查模型或重启 daemon");
+                return Ok(());
+            }
+        };
+
+        let result = match join_result {
             Ok(r) => r,
             Err(e) => {
                 self.is_processing.store(false, Ordering::SeqCst);
@@ -300,8 +309,6 @@ impl Daemon {
             }
         };
 
-        let _ = std::fs::remove_file(&audio_path);
-
         // 在发送前清除，避免：Hotkey(P3) 先于 TranscriptionComplete 被处理时被误忽略
         self.is_processing.store(false, Ordering::SeqCst);
         tx.send(DaemonEvent::TranscriptionComplete(result.text))
@@ -313,10 +320,9 @@ impl Daemon {
 }
 
 pub async fn run_daemon(
-    config: Config,
     model_path: PathBuf,
     tray: Option<Arc<TrayHandle>>,
 ) -> Result<()> {
-    let daemon = Daemon::new(config, model_path, tray)?;
+    let daemon = Daemon::new(model_path, tray)?;
     daemon.run().await
 }

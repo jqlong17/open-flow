@@ -1,4 +1,5 @@
 use anyhow::Result;
+use cpal::traits::{DeviceTrait, HostTrait};
 use std::time::Duration;
 
 use crate::audio::AudioCapture;
@@ -9,7 +10,26 @@ pub async fn test_record(duration_secs: u64) -> Result<()> {
     println!();
 
     // 显示可用设备
-    AudioCapture::list_input_devices()?;
+    let host = cpal::default_host();
+    println!("可用的音频输入设备:");
+    println!("{}", "=".repeat(50));
+    if let Ok(devices) = host.input_devices() {
+        for (idx, device) in devices.enumerate() {
+            if let Ok(name) = device.name() {
+                let is_default = host
+                    .default_input_device()
+                    .map(|d| d.name().ok() == Some(name.clone()))
+                    .unwrap_or(false);
+                println!("{} [{}] {}", if is_default { "*" } else { " " }, idx, name);
+                if let Ok(cfg) = device.default_input_config() {
+                    println!("    采样率: {}Hz, 通道: {}, 格式: {:?}",
+                        cfg.sample_rate().0, cfg.channels(), cfg.sample_format());
+                }
+            }
+        }
+    }
+    println!("{}", "=".repeat(50));
+    println!("* = 默认设备");
     println!();
 
     // 初始化音频采集器

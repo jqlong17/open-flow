@@ -1,8 +1,15 @@
 /target
 /dist
 /models
-.cursor/hooks/state/
-.cursor/memory/
 .venv-modelscope311/
 python/.venv/
 python/__pycache__/
+
+# Cursor IDE
+.cursor/
+
+# 测试数据（回归用，本地保留即可）
+testdata/
+
+# macOS
+.DS_Store

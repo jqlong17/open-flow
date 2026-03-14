@@ -14,7 +14,6 @@ pub struct TranscriptionResult {
     pub duration_ms: u64,
 }
 
+/// 热键触发事件（右 Command 按下）
 #[derive(Debug, Clone)]
-pub enum HotkeyEvent {
-    Pressed,
-}
+pub struct HotkeyEvent;

@@ -51,7 +51,7 @@ impl HotkeyListener {
                         "[Hotkey] 事件 #press={} 按下（右侧 Command）was_pressed={} -> 发送",
                         n, was
                     );
-                    if let Err(e) = sender.send(HotkeyEvent::Pressed) {
+                    if let Err(e) = sender.send(HotkeyEvent) {
                         error!("发送热键事件失败: {}", e);
                     }
                 }

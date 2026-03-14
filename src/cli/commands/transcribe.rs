@@ -6,9 +6,9 @@ use tracing::info;
 use crate::asr::AsrEngine;
 use crate::audio::AudioCapture;
 
+
 /// 单次转写 - 录音并识别
 pub async fn run(
-    output_mode: String,
     file: Option<PathBuf>,
     duration_secs: u64,
     model_override: Option<PathBuf>,
@@ -77,23 +77,6 @@ pub async fn run(
     println!("   置信度: {:.0}%", result.confidence * 100.0);
     println!("   耗时: {}ms", result.duration_ms);
     
-    // 根据输出模式处理结果
-    match output_mode.as_str() {
-        "stdout" => {
-            // 已打印到 stdout
-        }
-        "clipboard" => {
-            println!("\n📋 已复制到剪贴板（实现中）");
-        }
-        "paste" => {
-            println!("\n📋 自动粘贴（实现中）");
-        }
-        _ => {
-            // 默认已打印
-        }
-    }
-    
-    // 清理临时文件
     if !use_external_file {
         let _ = std::fs::remove_file(&audio_path);
     }

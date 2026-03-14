@@ -143,51 +143,41 @@ impl AsrEngine {
         info!("✓ 模型预热完成");
     }
 
-    /// 转录音频文件
-    pub fn transcribe(
+    /// 直接从内存 PCM 数据转写，避免磁盘 I/O round-trip。
+    /// samples: 单声道 f32 样本（已混音）；sample_rate: 采样率（Hz）
+    pub fn transcribe_pcm(
         &mut self,
-        audio_path: &Path,
-        _language: Option<&str>,
+        samples: &[f32],
+        sample_rate: u32,
     ) -> Result<TranscriptionResult> {
         let start = Instant::now();
 
-        info!("📝 开始转写: {:?}", audio_path);
+        info!("📝 开始转写（内存 PCM，{} 样本，{}Hz）", samples.len(), sample_rate);
 
-        // 检查音频文件是否存在
-        if !audio_path.exists() {
-            anyhow::bail!("音频文件不存在: {:?}", audio_path);
-        }
-
-        // 如果模型未就绪，使用模拟模式
         if !self.ready {
             warn!("⚠️  模型未就绪，使用模拟转写");
             return Ok(self.mock_transcribe());
         }
 
-        // 1. 加载音频
-        let audio = self.load_audio(audio_path)?;
-        info!("✓ 音频加载完成: {} 样本", audio.data.len());
-
-        // 2. 预处理
+        // 1. 预处理
         let preprocessor = self.preprocessor.as_ref().unwrap();
-        let features = preprocessor.process(&audio.data, audio.sample_rate)?;
+        let features = preprocessor.process(samples, sample_rate)?;
         if std::env::var("OPEN_FLOW_DEBUG_ASR").is_ok() {
             info!("[DEBUG] features shape: {:?}", features.dim());
         }
         info!("✓ 特征提取完成: {:?}", features.dim());
 
-        // 3. ONNX 推理
+        // 2. ONNX 推理
         let inference = self.inference.as_mut().unwrap();
-        let language_id = Self::resolve_language_id(_language);
+        let language_id = Self::resolve_language_id(Some("auto"));
         let textnorm_id = Self::resolve_textnorm_id();
-        let (logits, encoder_out_lens) =
-            inference.infer(&features, language_id, textnorm_id)?;
+        let (logits, encoder_out_lens) = inference.infer(&features, language_id, textnorm_id)?;
         if std::env::var("OPEN_FLOW_DEBUG_ASR").is_ok() {
             info!("[DEBUG] encoder_out_lens: {:?}", encoder_out_lens);
         }
         info!("✓ 推理完成: {:?}", logits.dim());
 
-        // 4. CTC 解码
+        // 3. CTC 解码
         let decoder = self.decoder.as_ref().unwrap();
         let text = decoder.decode(&logits, std::env::var("OPEN_FLOW_DEBUG_ASR").is_ok());
         info!("✓ 解码完成: {}", text);
@@ -198,6 +188,31 @@ impl AsrEngine {
             language: Some("zh".to_string()),
             duration_ms: start.elapsed().as_millis() as u64,
         })
+    }
+
+    /// 转录音频文件（供 `transcribe` CLI 命令使用，内部复用 transcribe_pcm）
+    pub fn transcribe(
+        &mut self,
+        audio_path: &Path,
+        language: Option<&str>,
+    ) -> Result<TranscriptionResult> {
+        info!("📝 开始转写（文件）: {:?}", audio_path);
+
+        if !audio_path.exists() {
+            anyhow::bail!("音频文件不存在: {:?}", audio_path);
+        }
+
+        if !self.ready {
+            warn!("⚠️  模型未就绪，使用模拟转写");
+            return Ok(self.mock_transcribe());
+        }
+
+        let audio = self.load_audio(audio_path)?;
+        info!("✓ 音频加载完成: {} 样本", audio.data.len());
+
+        // language 参数仅文件转写路径使用，内存路径固定 "auto"
+        let _ = language; // 当前固定用 "auto"，保留参数供后续扩展
+        self.transcribe_pcm(&audio.data, audio.sample_rate)
     }
 
     /// 加载音频文件

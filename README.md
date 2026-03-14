@@ -57,13 +57,15 @@ We believe **only open source enables real participation**: inspect the code, ch
 # 1. Install and start (auto-downloads ~230MB model on first run)
 curl -sSL https://raw.githubusercontent.com/jqlong17/open-flow/master/install.sh | sh
 
-# 2. Next time
+# 2. Next time (runs in background; close terminal anytime)
 open-flow start
 ```
 
 First run downloads the model from [Hugging Face](https://huggingface.co/haixuantao/SenseVoiceSmall-onnx). Gray dot in menu bar = ready. Right Command to record, again to transcribe and paste.
 
 **First use**: Grant Accessibility in System Settings → Privacy & Security → Accessibility.
+
+**Platform**: One-click install provides **Apple Silicon (M1/M2/M3)** prebuilt binaries only. **Intel Mac** users: build from source below.
 
 **Build from source** ([Rust](https://rustup.rs/)): `git clone https://github.com/jqlong17/open-flow.git && cd open-flow && cargo build --release`
 
@@ -73,7 +75,8 @@ First run downloads the model from [Hugging Face](https://huggingface.co/haixuan
 
 | Command | Description |
 | --- | --- |
-| `open-flow start` | Start (foreground, tray icon) |
+| `open-flow start` | Start in background (default; no terminal needed) |
+| `open-flow start --foreground` | Start in foreground (terminal stays open for logs) |
 | `open-flow stop` | Stop daemon |
 | `open-flow status` | Status, PID, log path |
 | `open-flow setup` | Manually download model |

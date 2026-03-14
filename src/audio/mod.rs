@@ -85,50 +85,6 @@ impl AudioCapture {
         })
     }
 
-    /// 列出所有可用的输入设备（调试用）
-    pub fn list_input_devices() -> Result<()> {
-        let host = cpal::default_host();
-
-        println!("可用的音频输入设备:");
-        println!("{}", "=".repeat(50));
-
-        match host.input_devices() {
-            Ok(devices) => {
-                for (idx, device) in devices.enumerate() {
-                    match device.name() {
-                        Ok(name) => {
-                            let is_default = host
-                                .default_input_device()
-                                .map(|d| d.name().ok() == Some(name.clone()))
-                                .unwrap_or(false);
-
-                            println!("{} [{}] {}", if is_default { "*" } else { " " }, idx, name);
-
-                            // 尝试获取配置信息
-                            if let Ok(config) = device.default_input_config() {
-                                println!(
-                                    "    采样率: {}Hz, 通道: {}, 格式: {:?}",
-                                    config.sample_rate().0,
-                                    config.channels(),
-                                    config.sample_format()
-                                );
-                            }
-                        }
-                        Err(e) => println!("  [{}] Error: {}", idx, e),
-                    }
-                }
-            }
-            Err(e) => {
-                println!("无法获取输入设备列表: {}", e);
-            }
-        }
-
-        println!("{}", "=".repeat(50));
-        println!("* = 默认设备");
-
-        Ok(())
-    }
-
     /// 录制音频并直接保存（简化版）
     pub fn record_to_file(&self, duration: Duration, output_path: &Path) -> Result<()> {
         info!("🔴 开始录音 {} 秒...", duration.as_secs());

@@ -16,15 +16,17 @@ impl TextInjector {
     /// 不使用 rdev::simulate，因为 simulate 通过 CGEventPost 投递，
     /// 会被 CGEventTap 捕获，与用户同时按下的右 Command 产生修饰键
     /// 状态竞争，导致真实 KeyPress(MetaRight) 丢失。
-    pub fn inject(&self, text: &str) -> Result<()> {
+    ///
+    /// 使用 async fn + tokio::time::sleep，避免阻塞 tokio worker 线程。
+    pub async fn inject(&self, text: &str) -> Result<()> {
         use arboard::Clipboard;
 
         // ── 1. 写入转写文本 ───────────────────────────────────────────
         let mut clipboard = Clipboard::new().context("无法访问剪贴板")?;
         clipboard.set_text(text).context("写入剪贴板失败")?;
 
-        // 给剪贴板一点时间同步
-        std::thread::sleep(Duration::from_millis(60));
+        // 给剪贴板一点时间同步（非阻塞，不占用 tokio worker）
+        tokio::time::sleep(Duration::from_millis(60)).await;
 
         // ── 2. 用 osascript 发送 Cmd+V（走 AX API，不经过 CGEventTap）──
         std::process::Command::new("osascript")

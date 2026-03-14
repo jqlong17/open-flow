@@ -57,13 +57,15 @@
 # 1. 安装并启动（首次会自动下载 ~230MB 模型）
 curl -sSL https://raw.githubusercontent.com/jqlong17/open-flow/master/install.sh | sh
 
-# 2. 之后每次使用
+# 2. 之后每次使用（后台运行，可随时关掉终端）
 open-flow start
 ```
 
 首次运行会从 [Hugging Face](https://huggingface.co/haixuantao/SenseVoiceSmall-onnx) 下载模型。菜单栏灰色圆点即就绪，按右侧 Command 录音，再按一次转写并粘贴。
 
 **首次使用**：在「系统设置 → 隐私与安全性 → 辅助功能」中为终端开启权限。
+
+**平台说明**：一键安装仅提供 **Apple Silicon（M1/M2/M3）** 预编译包。**Intel Mac** 用户请从源码构建。
 
 **从源码构建**（需 [Rust](https://rustup.rs/)）：`git clone https://github.com/jqlong17/open-flow.git && cd open-flow && cargo build --release`
 
@@ -73,7 +75,8 @@ open-flow start
 
 | 命令 | 说明 |
 | --- | --- |
-| `open-flow start` | 启动（前台，托盘图标） |
+| `open-flow start` | 后台启动（默认，无需保持终端） |
+| `open-flow start --foreground` | 前台启动（终端保持，可看日志） |
 | `open-flow stop` | 停止 daemon |
 | `open-flow status` | 状态、PID、日志路径 |
 | `open-flow setup` | 手动下载模型 |

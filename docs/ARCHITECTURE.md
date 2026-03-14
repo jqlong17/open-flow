@@ -33,7 +33,7 @@ Open Flow 是一个 macOS 专属的开源语音输入工具，采用 `Daemon + C
 │                     │                          │             │ │
 │  ┌─────────────┐    │           ┌──────────────▼──────────┐ │ │
 │  │  Any App    │◀───│───────────│    Text Injection        │ │ │
-│  │  (Paste)    │    │           │  arboard + Cmd+V         │ │ │
+│  │  (Paste)    │    │           │  arboard + osascript     │ │ │
 │  └─────────────┘    │           └─────────────────────────┘ │ │
 │                     └────────────────────────────────────────┘ │
 │                                                                  │
@@ -57,7 +57,7 @@ Open Flow 是一个 macOS 专属的开源语音输入工具，采用 `Daemon + C
 - **Audio Capture**：`cpal` 实时采集麦克风音频到 ring buffer
 - **State Machine**：`Idle → Recording → Processing → Idle`
 - **ASR Engine**：完整 Rust 推理管线，~82ms（见 ASR Pipeline 章节）
-- **Text Injection**：`arboard` 写入剪贴板 + `rdev::simulate` 模拟 Cmd+V
+- **Text Injection**：`arboard` 写入剪贴板 + `osascript` 发送 Cmd+V（避免与 CGEventTap 冲突）
 
 ### 2. CLI Tool (`src/main.rs`)
 
@@ -66,7 +66,8 @@ clap 驱动的命令行接口：
 | 命令 | 说明 |
 |------|------|
 | `open-flow setup` | 自动下载官方量化 ONNX 模型（~230MB） |
-| `open-flow start` | 前台启动 daemon（主线程 NSRunLoop 驱动托盘） |
+| `open-flow start` | 后台启动 daemon（默认，关终端不影响） |
+| `open-flow start --foreground` | 前台启动（终端占用，可看日志） |
 | `open-flow stop` | 发送 SIGTERM 停止 daemon |
 | `open-flow status` | 查看 PID、运行状态、日志路径 |
 | `open-flow transcribe` | 单次录音或文件转写 |
@@ -83,6 +84,7 @@ Idle ──[Right Cmd]──▶ Recording ──[Right Cmd]──▶ Processing 
 - **主线程**：创建 `TrayState`，驱动 NSRunLoop，处理菜单事件
 - **专用线程**：tokio `current_thread` + daemon（含 cpal::Stream，非 Send）
 - **TrayHandle**：Send+Sync，daemon 通过 channel 发送状态更新（灰/红/黄）
+- **菜单**：版本项可点击打开 GitHub；状态项随图标同步（待机/录音中/转写中）
 
 ---
 
@@ -105,7 +107,7 @@ Microphone (16kHz mono f32)
     │
     ▼ CTC Greedy Decode (blank=0, postprocess_tokens)
     │
-    ▼ Text → Clipboard (arboard) → Cmd+V (rdev::simulate)
+    ▼ Text → Clipboard (arboard) → Cmd+V (osascript)
 ```
 
 **关键实现参数**：
@@ -182,15 +184,17 @@ rdev::listen(move |event| {
 
 ### 文本注入
 
+使用 `osascript` 发送 Cmd+V（而非 rdev::simulate），避免与 CGEventTap 热键监听冲突：
+
 ```rust
 // 1. 转写结果写入剪贴板
 arboard::Clipboard::new()?.set_text(text)?;
 
-// 2. 模拟 Cmd+V（不恢复旧剪贴板，转写结果保留在剪贴板）
-simulate(&EventType::KeyPress(Key::MetaLeft))?;
-simulate(&EventType::KeyPress(Key::KeyV))?;
-simulate(&EventType::KeyRelease(Key::KeyV))?;
-simulate(&EventType::KeyRelease(Key::MetaLeft))?;
+// 2. osascript 发送 Cmd+V（走 Accessibility API，不经过 CGEventTap）
+std::process::Command::new("osascript")
+    .arg("-e")
+    .arg(r#"tell application "System Events" to keystroke "v" using {command down}"#)
+    .output()?;
 ```
 
 ---
@@ -238,10 +242,12 @@ src/
 │   └── mod.rs                 AudioCapture：build_live_stream/record_to_file/save_wav
 ├── daemon/
 │   └── mod.rs                 Daemon 主循环：热键→录音→转写→注入
+├── tray/
+│   └── mod.rs                 托盘图标（灰/红/黄）、菜单、状态同步
 ├── text_injection/
-│   └── mod.rs                 arboard 写剪贴板 + rdev::simulate Cmd+V
+│   └── mod.rs                 arboard 写剪贴板 + osascript Cmd+V
 ├── cli/
-│   ├── daemon.rs              start(spawn+setsid)/stop(SIGTERM)/status(PID 检查)
+│   ├── daemon.rs              start_background(spawn+setsid)/start_foreground/stop/status
 │   └── commands/
 │       ├── setup.rs           open-flow setup：HTTPS 下载模型文件，带进度显示
 │       ├── config.rs          set-model/set-hotkey/show
@@ -264,8 +270,8 @@ cargo build --release
 
 ### 目标架构
 
-- `aarch64-apple-darwin`（Apple Silicon）
-- `x86_64-apple-darwin`（Intel）
+- `aarch64-apple-darwin`（Apple Silicon，预编译包支持）
+- `x86_64-apple-darwin`（Intel，需从源码编译，ONNX Runtime 无 x86_64 预编译）
 
 ### 发布方式
 

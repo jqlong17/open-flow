@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use crate::common::config::Config;
@@ -39,12 +40,57 @@ fn remove_pid_file() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// start（方案 A：前台运行，主线程给 NSRunLoop）
+// start：默认后台 / 可选前台
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// 后台启动：spawn 子进程运行 daemon，父进程立即退出；关掉终端不影响子进程。
+pub fn start_background(model: Option<PathBuf>) -> anyhow::Result<()> {
+    if let Some(pid) = read_pid() {
+        if is_running(pid) {
+            println!("ℹ️  Open Flow 已在运行 (PID: {})", pid);
+            println!("   停止: open-flow stop");
+            return Ok(());
+        }
+        remove_pid_file();
+    }
+
+    let exe = std::env::current_exe().context("无法获取可执行文件路径")?;
+    let log = log_path()?;
+    fs::create_dir_all(log.parent().unwrap())?;
+
+    let mut args = vec!["start".to_string(), "--foreground".to_string()];
+    if let Some(ref m) = model {
+        args.push("--model".to_string());
+        args.push(m.display().to_string());
+    }
+
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .context("无法打开日志文件")?;
+
+    let child = Command::new(&exe)
+        .args(&args)
+        .env("OPEN_FLOW_DAEMON", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log_file.try_clone()?))
+        .stderr(Stdio::from(log_file))
+        .spawn()
+        .context("启动后台进程失败")?;
+
+    let pid = child.id();
+    // 不在此写 PID 文件，由子进程 start_foreground 在就绪后写入
+
+    println!("✅ Open Flow 已在后台启动 (PID: {})", pid);
+    println!("   日志: {}", log.display());
+    println!("   停止: open-flow stop");
+    Ok(())
+}
 
 /// 前台启动：终端被占用，Ctrl+C 或托盘「退出」可停止。
 /// 主线程驱动 macOS NSRunLoop（托盘事件），tokio 跑背景线程（录音/转写/热键）。
-pub fn start_foreground(model: Option<PathBuf>, hotkey: String) -> anyhow::Result<()> {
+pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     // ── 检查是否已在运行 ─────────────────────────────────────────────────
     if let Some(pid) = read_pid() {
         if is_running(pid) {
@@ -69,11 +115,11 @@ pub fn start_foreground(model: Option<PathBuf>, hotkey: String) -> anyhow::Resul
             e
         })?;
 
-    // ── 加载 & 更新配置 ───────────────────────────────────────────────
-    let mut config = Config::load().context("加载配置失败")?;
-    config.model_path = Some(model_path.clone());
-    config.hotkey = hotkey;
-    config.save().context("保存配置失败")?;
+    // ── 持久化模型路径到配置文件（方便 status 命令展示）─────────────
+    if let Ok(mut config) = Config::load() {
+        config.model_path = Some(model_path.clone());
+        let _ = config.save();
+    }
 
     // ── 写 PID 文件 ───────────────────────────────────────────────────
     let my_pid = std::process::id();
@@ -105,13 +151,11 @@ pub fn start_foreground(model: Option<PathBuf>, hotkey: String) -> anyhow::Resul
         }
     };
 
-    let config_clone = config.clone();
-
     // ── 在专用线程运行 daemon（current_thread 运行时，Daemon 含 cpal::Stream 非 Send）
     let log = log_path()?;
     println!("✅ Open Flow 已启动 (PID: {})", my_pid);
     println!("   模型: {:?}", model_path);
-    println!("   热键: {}", config.hotkey);
+    println!("   热键: 右 Command（固定）");
     println!("   日志: {}", log.display());
     println!();
     println!("   按 Ctrl+C 或托盘菜单「退出」可停止");
@@ -123,7 +167,7 @@ pub fn start_foreground(model: Option<PathBuf>, hotkey: String) -> anyhow::Resul
             .build()
             .expect("daemon tokio runtime");
         rt.block_on(async {
-            if let Err(e) = run_daemon(config_clone, model_path, tray_handle).await {
+            if let Err(e) = run_daemon(model_path, tray_handle).await {
                 eprintln!("Daemon 错误: {}", e);
             }
         });
@@ -267,7 +311,7 @@ pub async fn status() -> Result<()> {
             println!("  PID:    {}", pid);
             println!("  运行:   {}", uptime);
             println!("  模型:   {:?}", config.model_path.unwrap_or_default());
-            println!("  热键:   {}", config.hotkey);
+            println!("  热键:   右 Command（固定）");
             println!("  日志:   {}", log_path()?.display());
         }
         Some(pid) => {
