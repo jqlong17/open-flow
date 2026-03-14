@@ -164,7 +164,7 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
         pump_run_loop_100ms();
     }
 
-    // ── 在主线程创建托盘（macOS 要求 NSStatusItem 在主线程创建；其他平台为 stub）──────
+    // ── 在主线程创建托盘（macOS 菜单栏 / Windows·Linux 系统托盘）────────────────────
     let (mut tray, tray_handle) = match TrayState::new() {
         Ok((t, h)) => {
             t.set_state(TrayIconState::Idle);
@@ -183,9 +183,9 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     println!("   模型: {:?}", model_path);
     #[cfg(target_os = "macos")]
     println!("   热键: 右 Command（固定）");
-    #[cfg(target_os = "windows")]
-    println!("   热键: 右侧 Win 键（固定）");
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    println!("   热键: 右侧 Alt 键（固定）");
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows"), not(target_os = "linux")))]
     println!("   热键: 右 Meta/Super（固定）");
     println!("   日志: {}", log.display());
     println!();
@@ -234,11 +234,17 @@ fn run_main_loop(tray: Option<&TrayState>) {
             t.flush_menu_events();
         }
 
-        // 驱动 macOS NSRunLoop 100ms（分发菜单/托盘事件到回调）
+        // 驱动平台事件循环：macOS NSRunLoop；Windows Win32；Linux glib
         #[cfg(target_os = "macos")]
         pump_run_loop_100ms();
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        pump_win32_messages();
+
+        #[cfg(target_os = "linux")]
+        pump_glib_linux();
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         // 托盘菜单「退出」
@@ -250,6 +256,32 @@ fn run_main_loop(tray: Option<&TrayState>) {
         if SIGNAL_SHUTDOWN.load(Ordering::SeqCst) {
             tracing::info!("收到信号，正常退出");
             break;
+        }
+    }
+}
+
+/// Linux：处理 glib 主上下文，使托盘图标和菜单能响应点击。
+#[cfg(target_os = "linux")]
+fn pump_glib_linux() {
+    let ctx = glib::MainContext::default();
+    while ctx.iteration(false) {}
+}
+
+/// Windows：处理当前线程消息队列，使托盘图标和菜单能响应点击。
+#[cfg(target_os = "windows")]
+fn pump_win32_messages() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
+    };
+
+    let mut msg = MSG::default();
+    while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+        if msg.message == WM_QUIT {
+            break;
+        }
+        unsafe {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
         }
     }
 }
@@ -388,9 +420,9 @@ pub async fn status() -> Result<()> {
             println!("  模型:   {:?}", config.model_path.unwrap_or_default());
             #[cfg(target_os = "macos")]
             println!("  热键:   右 Command（固定）");
-            #[cfg(target_os = "windows")]
-            println!("  热键:   右侧 Win 键（固定）");
-            #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            println!("  热键:   右侧 Alt 键（固定）");
+            #[cfg(all(not(target_os = "macos"), not(target_os = "windows"), not(target_os = "linux")))]
             println!("  热键:   右 Meta/Super（固定）");
             println!("  日志:   {}", log_path()?.display());
         }

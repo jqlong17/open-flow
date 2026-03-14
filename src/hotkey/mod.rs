@@ -131,28 +131,27 @@ impl HotkeyListener {
 
         println!("⌨️  热键监听器已启动（rdev）");
 
+        // Windows / Linux: 右侧 Alt（AltGr）；与 macOS 右 Command 区分
         let result = listen(move |event: Event| {
-            match event.event_type {
-                EventType::KeyPress(Key::MetaRight) => {
-                    let n = pc.fetch_add(1, Ordering::SeqCst) + 1;
-                    let was = pressed_clone.swap(true, Ordering::SeqCst);
-                    info!(
-                        "[Hotkey] 事件 #press={} 按下（右侧 Command）was_pressed={} -> 发送",
-                        n, was
-                    );
-                    if let Err(e) = sender.send(HotkeyEvent) {
-                        error!("发送热键事件失败: {}", e);
-                    }
+            let hotkey_press = matches!(event.event_type, EventType::KeyPress(Key::AltGr));
+            let hotkey_release = matches!(event.event_type, EventType::KeyRelease(Key::AltGr));
+            if hotkey_press {
+                let n = pc.fetch_add(1, Ordering::SeqCst) + 1;
+                let was = pressed_clone.swap(true, Ordering::SeqCst);
+                info!(
+                    "[Hotkey] 事件 #press={} 按下（右侧 Alt）was_pressed={} -> 发送",
+                    n, was
+                );
+                if let Err(e) = sender.send(HotkeyEvent) {
+                    error!("发送热键事件失败: {}", e);
                 }
-                EventType::KeyRelease(Key::MetaRight) => {
-                    let n = rc.fetch_add(1, Ordering::SeqCst) + 1;
-                    let was = pressed_clone.swap(false, Ordering::SeqCst);
-                    info!(
-                        "[Hotkey] 事件 #release={} 松开（右侧 Command）was_pressed={}",
-                        n, was
-                    );
-                }
-                _ => {}
+            } else if hotkey_release {
+                let n = rc.fetch_add(1, Ordering::SeqCst) + 1;
+                let was = pressed_clone.swap(false, Ordering::SeqCst);
+                info!(
+                    "[Hotkey] 事件 #release={} 松开（右侧 Alt）was_pressed={}",
+                    n, was
+                );
             }
         });
 

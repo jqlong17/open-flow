@@ -4,15 +4,17 @@
 use anyhow::Result;
 use std::time::{Duration, Instant};
 
-/// 模拟一次「按下并松开」右侧 Command
-fn simulate_right_command() -> Result<()> {
+/// 模拟一次「按下并松开」热键（Windows/Linux: 右侧 Alt；macOS: 右侧 Command）
+fn simulate_hotkey() -> Result<()> {
     use rdev::{simulate, EventType, Key};
     let delay = Duration::from_millis(25);
-    simulate(&EventType::KeyPress(Key::MetaRight))
-        .map_err(|e| anyhow::anyhow!("模拟按下失败: {:?}", e))?;
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    let key = Key::AltGr;
+    #[cfg(target_os = "macos")]
+    let key = Key::MetaRight;
+    simulate(&EventType::KeyPress(key)).map_err(|e| anyhow::anyhow!("模拟按下失败: {:?}", e))?;
     std::thread::sleep(delay);
-    simulate(&EventType::KeyRelease(Key::MetaRight))
-        .map_err(|e| anyhow::anyhow!("模拟松开失败: {:?}", e))?;
+    simulate(&EventType::KeyRelease(key)).map_err(|e| anyhow::anyhow!("模拟松开失败: {:?}", e))?;
     std::thread::sleep(delay);
     Ok(())
 }
@@ -24,7 +26,7 @@ pub async fn run_test_hotkey(
     transcribe_wait_secs: u64,
     ready_wait_secs: u64,
 ) -> Result<()> {
-    println!("⌨️  热键自动化测试（模拟右侧 Command）");
+    println!("⌨️  热键自动化测试（模拟热键：Windows/Linux 右侧 Alt，macOS 右 Command）");
     println!("   请先在另一终端运行: RUST_LOG=info open-flow start");
     println!();
     println!("   参数: {} 轮, 每轮录音约 {}s, 转写等待 {}s", cycles, record_secs, transcribe_wait_secs);
@@ -36,11 +38,11 @@ pub async fn run_test_hotkey(
     for i in 1..=cycles {
         let t0 = Instant::now();
         println!("[TestHotkey] 轮次 {} — 模拟按键: 开始录音", i);
-        simulate_right_command()?;
+        simulate_hotkey()?;
         std::thread::sleep(Duration::from_secs(record_secs));
 
         println!("[TestHotkey] 轮次 {} — 模拟按键: 停止并转写 (已录音 ~{}s)", i, record_secs);
-        simulate_right_command()?;
+        simulate_hotkey()?;
         std::thread::sleep(Duration::from_secs(transcribe_wait_secs));
 
         let elapsed = t0.elapsed().as_secs();
