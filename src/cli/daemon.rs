@@ -293,13 +293,13 @@ unsafe extern "system" fn win32_ctrl_handler(dw_ctrl_type: u32) -> i32 {
 /// Windows：处理当前线程消息队列，使托盘图标和菜单能响应点击。
 #[cfg(target_os = "windows")]
 fn pump_win32_messages() {
-    use std::ptr;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
     };
 
     let mut msg: MSG = unsafe { std::mem::zeroed() };
-    while unsafe { PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
+    // HWND/wMsgFilterMin/wMsgFilterMax 在 windows-sys 中为 isize/u32/u32，传 0 表示不过滤
+    while unsafe { PeekMessageW(&mut msg, 0, 0, 0, PM_REMOVE) } != 0 {
         if msg.message == WM_QUIT {
             break;
         }
