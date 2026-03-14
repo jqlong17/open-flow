@@ -163,7 +163,7 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
         use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
         unsafe {
             let handler = Some(win32_ctrl_handler as _);
-            SetConsoleCtrlHandler(handler, true);
+            SetConsoleCtrlHandler(handler, 1i32); // 1 = TRUE = add handler
         }
     }
 
@@ -293,12 +293,13 @@ unsafe extern "system" fn win32_ctrl_handler(dw_ctrl_type: u32) -> i32 {
 /// Windows：处理当前线程消息队列，使托盘图标和菜单能响应点击。
 #[cfg(target_os = "windows")]
 fn pump_win32_messages() {
+    use std::ptr;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
     };
 
-    let mut msg = MSG::default();
-    while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+    let mut msg: MSG = unsafe { std::mem::zeroed() };
+    while unsafe { PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
         if msg.message == WM_QUIT {
             break;
         }
