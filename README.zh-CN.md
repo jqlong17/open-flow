@@ -2,6 +2,8 @@
 
 **中文** | [English](README.md)
 
+![Open Flow](assets/open-flow-banner.png)
+
 **面向 AI 编程场景的开源语音输入工具。** 按一下键录音，再按一下转写并粘贴。
 
 ---

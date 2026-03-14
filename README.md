@@ -2,6 +2,8 @@
 
 [中文](README.zh-CN.md) | **English**
 
+![Open Flow](assets/open-flow-banner.png)
+
 **Open-source voice input for AI coding.** Press a key to record on macOS, press again to transcribe and paste into any input field.
 
 ---
