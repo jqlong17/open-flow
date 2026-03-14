@@ -5,6 +5,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use crate::asr::groq::GroqAsrProvider;
+use crate::asr::{AsrProvider, LocalAsrProvider};
 use crate::common::config::Config;
 use crate::daemon::run_daemon;
 use crate::tray::{TrayIconState, TrayState};
@@ -35,7 +37,18 @@ fn read_pid() -> Option<u32> {
 fn is_running(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+        if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
+            return false;
+        }
+        // 验证是否确实是 open-flow 进程，而不是被回收的 PID
+        if let Ok(output) = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .output()
+        {
+            let comm = String::from_utf8_lossy(&output.stdout);
+            return comm.trim().contains("open-flow");
+        }
+        true // ps 失败则假定是我们的进程
     }
     #[cfg(windows)]
     {
@@ -177,20 +190,40 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
         }
     };
 
+    // ── 构建 ASR provider ──────────────────────────────────────────
+    let config = Config::load().unwrap_or_default();
+    let provider: Arc<dyn AsrProvider> = match config.provider.as_str() {
+        "groq" => {
+            let api_key = config.resolved_groq_api_key();
+            match GroqAsrProvider::new(api_key, config.groq_model.clone(), config.groq_language.clone()) {
+                Ok(p) => {
+                    println!("   Provider: Groq ({})", config.groq_model);
+                    Arc::new(p)
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Groq provider 初始化失败: {}。回退到本地模式。", e);
+                    Arc::new(LocalAsrProvider::new(model_path.clone()))
+                }
+            }
+        }
+        _ => {
+            println!("   Provider: Local (SenseVoice)");
+            Arc::new(LocalAsrProvider::new(model_path.clone()))
+        }
+    };
+
     // ── 在专用线程运行 daemon（current_thread 运行时，Daemon 含 cpal::Stream 非 Send）
     let log = log_path()?;
     println!("✅ Open Flow 已启动 (PID: {})", my_pid);
-    println!("   模型: {:?}", model_path);
-    #[cfg(target_os = "macos")]
-    println!("   热键: 右 Command（固定）");
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
-    println!("   热键: 右侧 Alt 键（固定）");
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows"), not(target_os = "linux")))]
-    println!("   热键: 右 Meta/Super（固定）");
+    println!("   热键: {}", config.hotkey);
+    println!("   触发模式: {}", config.trigger_mode);
     println!("   日志: {}", log.display());
     println!();
     println!("   按 Ctrl+C 或托盘菜单「退出」可停止");
     println!("   ⏳ 模型加载与预热约需 3-5 秒，完成后热键即可使用");
+
+    let daemon_alive = Arc::new(AtomicBool::new(true));
+    let daemon_alive_clone = daemon_alive.clone();
 
     let daemon_handle = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -198,14 +231,15 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
             .build()
             .expect("daemon tokio runtime");
         rt.block_on(async {
-            if let Err(e) = run_daemon(model_path, tray_handle).await {
+            if let Err(e) = run_daemon(provider, tray_handle).await {
                 eprintln!("Daemon 错误: {}", e);
             }
         });
+        daemon_alive_clone.store(false, Ordering::SeqCst);
     });
 
     // ── 主线程：驱动 macOS NSRunLoop，让托盘 / 菜单事件得以分发 ──────
-    run_main_loop(tray.as_ref());
+    run_main_loop(tray.as_ref(), &daemon_alive);
 
     // ── 退出前显式隐藏菜单栏图标并 pump run loop，避免图标残留
     if let Some(ref t) = tray {
@@ -219,14 +253,28 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
 
     // ── 退出清理 ──────────────────────────────────────────────────────
     remove_pid_file();
-    let _ = daemon_handle.join();
+
+    // 给 daemon 线程短时间优雅退出
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        if daemon_handle.is_finished() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
     println!("\n👋 Open Flow 已停止");
-    Ok(())
+
+    // 强制退出——daemon 线程可能阻塞在 tokio recv() 或 CFRunLoop 上
+    std::process::exit(0);
 }
 
 /// macOS 主循环：每 100ms 执行一次 NSRunLoop，检查是否需要退出。
 /// 这是让 tray-icon 在 macOS 上正常渲染和响应菜单的关键。
-fn run_main_loop(tray: Option<&TrayState>) {
+fn run_main_loop(
+    tray: Option<&TrayState>,
+    daemon_alive: &AtomicBool,
+) {
     loop {
         // 应用 daemon 发来的托盘状态更新（灰/红/黄）
         if let Some(t) = tray {
@@ -255,6 +303,11 @@ fn run_main_loop(tray: Option<&TrayState>) {
         // SIGTERM / SIGINT（open-flow stop 或 Ctrl+C）
         if SIGNAL_SHUTDOWN.load(Ordering::SeqCst) {
             tracing::info!("收到信号，正常退出");
+            break;
+        }
+        // daemon 线程意外退出
+        if !daemon_alive.load(Ordering::SeqCst) {
+            tracing::error!("Daemon 线程已意外退出");
             break;
         }
     }
@@ -299,8 +352,8 @@ fn prepare_appkit() {
 
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(|| {
-            // NSApplicationActivationPolicyRegular = 0
-            let _: () = msg_send![app, setActivationPolicy: 0i64];
+            // NSApplicationActivationPolicyAccessory = 1（无 Dock 图标，但可以有窗口）
+            let _: () = msg_send![app, setActivationPolicy: 1i64];
             let _: () = msg_send![app, finishLaunching];
         });
     }
@@ -383,6 +436,9 @@ pub async fn stop() -> Result<()> {
             }
         }
         unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        remove_pid_file();
+        println!("✅ daemon 已停止（强制终止）");
     }
 
     #[cfg(windows)]
@@ -414,17 +470,14 @@ pub async fn status() -> Result<()> {
         Some(pid) if is_running(pid) => {
             let uptime = get_uptime_str(pid);
             println!("Open Flow daemon 状态");
-            println!("  状态:   ✅ 运行中");
-            println!("  PID:    {}", pid);
-            println!("  运行:   {}", uptime);
-            println!("  模型:   {:?}", config.model_path.unwrap_or_default());
-            #[cfg(target_os = "macos")]
-            println!("  热键:   右 Command（固定）");
-            #[cfg(any(target_os = "windows", target_os = "linux"))]
-            println!("  热键:   右侧 Alt 键（固定）");
-            #[cfg(all(not(target_os = "macos"), not(target_os = "windows"), not(target_os = "linux")))]
-            println!("  热键:   右 Meta/Super（固定）");
-            println!("  日志:   {}", log_path()?.display());
+            println!("  状态:     ✅ 运行中");
+            println!("  PID:      {}", pid);
+            println!("  运行:     {}", uptime);
+            println!("  模型:     {:?}", config.model_path.unwrap_or_default());
+            println!("  Provider: {}", config.provider);
+            println!("  热键:     {}", config.hotkey);
+            println!("  触发模式: {}", config.trigger_mode);
+            println!("  日志:     {}", log_path()?.display());
         }
         Some(pid) => {
             println!("Open Flow daemon 状态");

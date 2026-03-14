@@ -21,6 +21,7 @@ path = "src/lib.rs"
 # Core
 tokio = { version = "1.35", features = ["full"] }
 anyhow = "1.0"
+async-trait = "0.1"
 thiserror = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -49,7 +50,7 @@ rubato = "0.16"
 realfft = "3.4"
 
 # HTTP client (for model download)，用 rustls 避免 Linux 上依赖系统 OpenSSL
-reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["stream", "rustls-tls", "multipart"], default-features = false }
 
 # Utils（放 [dependencies] 内，保证 Linux/macOS/Windows 都能用）
 uuid = { version = "1.6", features = ["v4"] }
