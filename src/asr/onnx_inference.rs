@@ -2,10 +2,23 @@ use ndarray::{Array2, Axis};
 use ort::{
     logging::LogLevel,
     session::{builder::GraphOptimizationLevel, Session},
-    value::{Tensor, TensorRef},
+    value::{Tensor, TensorRef, Value},
 };
 use std::path::Path;
 use tracing::info;
+
+/// 将首输出张量解析为 f32（兼容 float32 与 float16 模型）
+fn extract_logits_as_f32(value: &Value) -> anyhow::Result<ndarray::ArrayD<f32>> {
+    if let Ok(view) = value.try_extract_array::<f32>() {
+        return Ok(view.to_owned().into_dyn());
+    }
+    let view = value
+        .try_extract_array::<half::f16>()
+        .map_err(|e: ort::Error| anyhow::anyhow!(e.to_string()))?;
+    let vec_f32: Vec<f32> = view.iter().map(|x: &half::f16| x.to_f32()).collect();
+    let shape: Vec<usize> = view.shape().to_vec();
+    Ok(ndarray::Array::from_shape_vec(shape, vec_f32)?.into_dyn())
+}
 
 /// ONNX 推理引擎
 pub struct OnnxInference {
@@ -67,9 +80,8 @@ impl OnnxInference {
             })
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-        let output = outputs[0]
-            .try_extract_array::<f32>()
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        // 支持 float32 与 float16 输出（FP16 模型经图修复后首输出多为 f32，少数仍为 f16）
+        let output = extract_logits_as_f32(&outputs[0])?;
 
         let encoder_out_lens: Vec<i32> = if outputs.len() > 1 {
             outputs[1]

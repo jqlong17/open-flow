@@ -78,12 +78,14 @@ clap 驱动的命令行接口：
 
 | 命令 | 说明 |
 |------|------|
-| `open-flow setup` | 自动下载官方量化 ONNX 模型（~230MB） |
+| `open-flow setup` | 按当前预设下载模型（quantized ~230MB / fp16 ~450MB） |
 | `open-flow start` | 后台启动 daemon（默认，关终端不影响） |
 | `open-flow start --foreground` | 前台启动（终端占用，可看日志） |
 | `open-flow stop` | 发送 SIGTERM 停止 daemon |
 | `open-flow status` | 查看 PID、运行状态、日志路径 |
 | `open-flow transcribe` | 单次录音或文件转写 |
+| `open-flow model use <预设>` | 切换 quantized / fp16，未就绪时自动下载 |
+| `open-flow model list` | 列出当前预设与可用预设 |
 | `open-flow config` | 模型路径、热键等配置管理 |
 | `open-flow test-hotkey` | 自动化热键测试（模拟按键多轮，配合 daemon 日志排查） |
 
@@ -146,33 +148,34 @@ Microphone (16kHz mono f32)
 
 ## SenseVoice Model
 
-### 模型来源
+### 模型来源与预设
 
-官方量化 ONNX（推荐）：[ModelScope / iic/SenseVoiceSmall-onnx](https://www.modelscope.cn/models/iic/SenseVoiceSmall-onnx)
+- **quantized**（默认）：[Hugging Face haixuantao/SenseVoiceSmall-onnx](https://huggingface.co/haixuantao/SenseVoiceSmall-onnx)（~230MB）
+- **fp16**：[Hugging Face ruska1117/SenseVoiceSmall-onnx-fp16](https://huggingface.co/ruska1117/SenseVoiceSmall-onnx-fp16)（~450MB，含 model.onnx + model.onnx.data）
+- 官方：ModelScope [iic/SenseVoiceSmall-onnx](https://www.modelscope.cn/models/iic/SenseVoiceSmall-onnx)
+
+配置由 `config.toml` 的 `model_preset` 决定（quantized | fp16）。**首次使用某预设时**，`open-flow start` 或 `open-flow model use <预设>` 会从对应 HF 仓库自动下载到默认数据目录。
 
 ```bash
-open-flow setup   # 自动下载到默认数据目录
+open-flow setup              # 按当前预设下载到默认目录
+open-flow model use fp16     # 切换到 fp16 并自动下载（若未就绪）
+open-flow model list         # 查看当前预设与可用预设
 ```
 
 ### 模型目录结构
 
-```
-sensevoice-small/
-├── model.onnx          # 或 model_quant.onnx（两种文件名均支持）
-├── tokens.json         # 词表（~344KB）
-├── am.mvn              # CMVN 特征均值/方差（~11KB）
-└── config.yaml         # 模型配置
-```
+- **quantized**：`models/sensevoice-small/`（含 model.onnx 或 model_quant.onnx、tokens.json、am.mvn、config.yaml）
+- **fp16**：`models/sensevoice-small-fp16/`（含 model.onnx、model.onnx.data、tokens.json、am.mvn、config.yaml）
 
 ASR 引擎通过 `find_model_file()` 依次查找 `model.onnx` → `model_quant.onnx`，两种命名均可直接使用。
 
-### 量化版 vs 未量化版
+### 量化版 vs fp16
 
-| 对比项 | 量化版（官方） | 未量化版 |
-|--------|--------------|---------|
-| 文件大小 | ~230MB | ~894MB |
+| 对比项 | quantized（默认） | fp16 |
+|--------|------------------|------|
+| 文件大小 | ~230MB | ~450MB |
 | 推理耗时（M3 Pro） | ~83ms | ~79ms |
-| 识别效果 | 与未量化版一致（已回归验证） | 基准 |
+| 识别效果 | 与 fp16 一致（已回归验证） | 基准 |
 
 ---
 
@@ -208,7 +211,7 @@ ASR 引擎通过 `find_model_file()` 依次查找 `model.onnx` → `model_quant.
 - **Windows**：`%APPDATA%\openflow\open-flow\config.toml`
 - **Linux**：`~/.config/openflow/open-flow/config.toml`
 
-模型默认目录：上述 config 目录同级的 `models/sensevoice-small/`。
+模型默认目录：与 config 同级的 `models/` 下，按预设分目录：`sensevoice-small/`（quantized）、`sensevoice-small-fp16/`（fp16）。
 
 ### 默认值
 
