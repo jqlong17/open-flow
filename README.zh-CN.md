@@ -67,7 +67,11 @@ open-flow start
 
 **平台说明**：一键安装仅提供 **Apple Silicon（M1/M2/M3）** 预编译包。**Intel Mac** 用户请从源码构建。
 
+**下载 .app**（双击即运行）：[Releases](https://github.com/jqlong17/open-flow/releases) 页面下载 `Open-Flow-<版本>-macos-aarch64.app.zip`，解压后将 **Open Flow.app** 拖入「应用程序」即可。
+
 **从源码构建**（需 [Rust](https://rustup.rs/)）：`git clone https://github.com/jqlong17/open-flow.git && cd open-flow && cargo build --release`
+
+**本地打 .app 包**：`./scripts/build-app.sh` → 生成 `dist/Open Flow.app`
 
 ---
 

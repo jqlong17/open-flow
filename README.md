@@ -67,7 +67,11 @@ First run downloads the model from [Hugging Face](https://huggingface.co/haixuan
 
 **Platform**: One-click install provides **Apple Silicon (M1/M2/M3)** prebuilt binaries only. **Intel Mac** users: build from source below.
 
+**Download .app** (double-click to run): [Releases](https://github.com/jqlong17/open-flow/releases) → download `Open-Flow-<version>-macos-aarch64.app.zip` → unzip and drag **Open Flow.app** to Applications.
+
 **Build from source** ([Rust](https://rustup.rs/)): `git clone https://github.com/jqlong17/open-flow.git && cd open-flow && cargo build --release`
+
+**Build .app locally**: `./scripts/build-app.sh` → `dist/Open Flow.app`
 
 ---
 
