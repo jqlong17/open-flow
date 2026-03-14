@@ -1,7 +1,6 @@
 use ndarray::Array2;
 use std::f32::consts::PI;
 use std::path::Path;
-use rand::Rng;
 
 /// 音频预处理参数（与 FunASR SenseVoice frontend_conf 对齐）
 /// config: fs=16000, window=hamming, n_mels=80, frame_length=25, frame_shift=10, lfr_m=7, lfr_n=6
@@ -183,13 +182,21 @@ fn resample_audio(audio: &[f32], from_rate: u32, to_rate: u32) -> anyhow::Result
     Ok(out)
 }
 
+/// 简单 LCG 伪随机，用于 dither，避免依赖 rand（便于 Windows 等平台构建）
+#[inline]
+fn lcg_next_u32(state: &mut u32) -> u32 {
+    *state = state.wrapping_mul(1103515245).wrapping_add(12345);
+    *state >> 16
+}
+
 /// Dither：对样本加均匀随机噪声，与 Kaldi/FunASR 一致（scale 约 1.0 对应 ±0.5 量级）
 fn add_dither(audio: &[f32], scale: f32) -> Vec<f32> {
-    let mut rng = rand::thread_rng();
+    let mut state = 1u32;
     audio
         .iter()
         .map(|&x| {
-            let u: f32 = rng.gen_range(-0.5..=0.5);
+            let u = (lcg_next_u32(&mut state) % 10000) as f32 / 10000.0; // [0, 1)
+            let u = u - 0.5; // [-0.5, 0.5)
             x + scale * u
         })
         .collect()
