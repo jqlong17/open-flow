@@ -41,10 +41,11 @@ fn is_running(pid: u32) -> bool {
     {
         use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
         use windows_sys::Win32::System::Threading::{
-            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE,
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
         };
+        const STILL_ACTIVE: u32 = 259;
         let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-        if h.is_null() {
+        if h == 0 || h == -1_i32 as isize {
             return false;
         }
         let mut code: u32 = 0;
@@ -357,7 +358,7 @@ pub async fn stop() -> Result<()> {
         use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
         use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
         let h = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
-        if !h.is_null() {
+        if h != 0 && h != -1_i32 as isize {
             unsafe {
                 let _ = TerminateProcess(h as HANDLE, 0);
                 CloseHandle(h as HANDLE);

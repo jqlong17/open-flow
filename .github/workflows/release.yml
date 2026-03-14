@@ -73,8 +73,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Linux deps (ALSA + X11 for cpal/rdev)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libx11-dev
+      - name: Install Linux deps (ALSA + X11/Xi for cpal/rdev)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libx11-dev libxi-dev
 
       - name: Build release
         run: cargo build --release
