@@ -7,15 +7,60 @@ use tracing::info;
 
 const CONFIG_FILE: &str = "config.toml";
 
+/// 模型预设：仅支持 quantized（默认）与 fp16
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModelPreset {
+    /// HuggingFace 量化版（~200MB），默认
+    #[default]
+    Quantized,
+    /// FP16 半精度（~450MB），更高精度，需手动切换
+    Fp16,
+}
+
+impl ModelPreset {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ModelPreset::Quantized => "quantized",
+            ModelPreset::Fp16 => "fp16",
+        }
+    }
+}
+
+impl std::str::FromStr for ModelPreset {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim().to_lowercase();
+        match s.as_str() {
+            "quantized" | "quant" => Ok(ModelPreset::Quantized),
+            "fp16" | "medium" => Ok(ModelPreset::Fp16),
+            _ => Err(format!("未知预设: {}，可选: quantized, fp16", s)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub model_path: Option<PathBuf>,
+    /// 模型预设：quantized（默认）| fp16。序列化为 config 中的字符串。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_preset: Option<String>,
+}
+
+impl Config {
+    /// 当前生效的模型预设（config 未设置时默认 quantized）
+    pub fn effective_preset(&self) -> ModelPreset {
+        self.model_preset
+            .as_deref()
+            .and_then(|s| s.trim().to_lowercase().parse().ok())
+            .unwrap_or_default()
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             model_path: None,
+            model_preset: None,
         }
     }
 }
@@ -71,5 +116,11 @@ impl Config {
         fs::create_dir_all(data_dir)?;
 
         Ok(data_dir.to_path_buf())
+    }
+
+    /// 设置模型预设并写回 config
+    pub fn set_model_preset(&mut self, preset: ModelPreset) -> Result<()> {
+        self.model_preset = Some(preset.as_str().to_string());
+        self.save()
     }
 }

@@ -24,6 +24,8 @@ pub struct AsrEngine {
     inference: Option<OnnxInference>,
     decoder: Option<CTCDecoder>,
     ready: bool,
+    /// 加载失败时的错误信息，便于 daemon 报错时展示
+    load_error: Option<String>,
 }
 
 impl AsrEngine {
@@ -77,10 +79,12 @@ impl AsrEngine {
             inference: None,
             decoder: None,
             ready: false,
+            load_error: None,
         };
 
         // 尝试加载模型
         if let Err(e) = engine.load_model() {
+            engine.load_error = Some(e.to_string());
             warn!("⚠️  模型加载失败: {}", e);
             warn!("   将使用模拟模式");
         }
@@ -300,6 +304,7 @@ impl AsrEngine {
             onnx_exists,
             tokens_exists,
             ready: self.ready,
+            load_error: self.load_error.clone(),
         }
     }
 }
@@ -319,6 +324,8 @@ pub struct AsrStatus {
     #[allow(dead_code)]
     pub tokens_exists: bool,
     pub ready: bool,
+    /// 若 ready=false，可能为加载失败原因
+    pub load_error: Option<String>,
 }
 
 #[cfg(test)]

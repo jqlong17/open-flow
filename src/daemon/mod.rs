@@ -107,11 +107,20 @@ impl Daemon {
         // ── ASR 状态 ─────────────────────────────────────────────────
         let asr_status = self.asr_engine.lock().unwrap().check_status();
         if !asr_status.ready {
+            let hint = asr_status
+                .load_error
+                .as_deref()
+                .unwrap_or("（无详细错误，请查看日志）");
+            let known_fix = if hint.contains("tensor(int64)") && hint.contains("tensor(int32)") {
+                "\n  建议: 若加载失败可尝试切换预设: open-flow model use quantized 或 open-flow model use fp16"
+            } else {
+                ""
+            };
             anyhow::bail!(
-                "模型未就绪：{:?}\n  onnx={} mvn={}",
+                "模型未就绪：{:?}\n  原因: {}{}",
                 asr_status.model_path,
-                asr_status.onnx_exists,
-                asr_status.model_exists,
+                hint,
+                known_fix
             );
         }
 

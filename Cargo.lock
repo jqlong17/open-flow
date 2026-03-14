@@ -2133,7 +2133,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "open-flow"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2146,6 +2146,7 @@ dependencies = [
  "directories",
  "dirs 5.0.1",
  "glib 0.19.9",
+ "half",
  "hound",
  "libc",
  "ndarray",
@@ -2226,6 +2227,7 @@ version = "2.0.0-rc.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7de3af33d24a745ffb8fab904b13478438d1cd52868e6f17735ef6e1f8bf133"
 dependencies = [
+ "half",
  "ndarray",
  "ort-sys",
  "smallvec",

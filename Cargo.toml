@@ -42,8 +42,9 @@ rdev = "0.5"
 arboard = "3"
 tray-icon = "0.21"
 
-# ASR - SenseVoice ONNX integration
-ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
+# ASR - SenseVoice ONNX integration（half 用于 FP16 模型输出解析）
+ort = { version = "2.0.0-rc.12", features = ["ndarray", "half"] }
+half = "2.4"
 ndarray = "0.17.2"
 rubato = "0.16"
 realfft = "3.4"

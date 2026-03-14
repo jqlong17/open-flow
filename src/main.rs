@@ -136,6 +136,12 @@ enum Commands {
         ready_wait_secs: u64,
     },
 
+    /// Switch or list model preset (quantized 默认 | fp16)，缺的模型会自动下载
+    Model {
+        #[command(subcommand)]
+        command: ModelCommand,
+    },
+
     /// Manually download the ASR model (手动下载模型，首次运行会自动触发无需手动执行)
     #[command(hide = true)]
     Setup {
@@ -147,6 +153,20 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum ModelCommand {
+    /// 切换到指定预设；若该预设对应目录无模型则自动下载
+    Use {
+        /// 预设: quantized（默认）| fp16
+        preset: String,
+        /// 切换后强制检查/下载一次
+        #[arg(long)]
+        download: bool,
+    },
+    /// 列出当前预设与可用预设
+    List,
 }
 
 /// `open-flow start` 默认后台；`--foreground` 时走前台路径（主线程保留给 macOS 托盘/NSRunLoop）
@@ -228,6 +248,15 @@ async fn async_main(cmd: Commands) -> anyhow::Result<()> {
             )
             .await?;
         }
+        Commands::Model { command } => match command {
+            ModelCommand::Use { preset, download } => {
+                let p = preset.parse().map_err(|e: String| anyhow::anyhow!("{}", e))?;
+                commands::model::use_preset(p, download).await?;
+            }
+            ModelCommand::List => {
+                commands::model::list()?;
+            }
+        },
         Commands::Setup { model_dir, force } => {
             commands::setup::run(model_dir, force).await?;
         }
