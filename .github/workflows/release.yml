@@ -116,23 +116,17 @@ jobs:
         id: tag
         run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
-      - name: List downloaded artifacts (debug)
-        run: |
-          echo "=== macos-artifacts ===" && ls -la macos-artifacts/ 2>/dev/null || true
-          echo "=== linux-artifact ===" && ls -la linux-artifact/ 2>/dev/null || true
-          echo "=== windows-artifact ===" && ls -la windows-artifact/ 2>/dev/null || true
-          find . -name "*.tar.gz" -o -name "*.zip" -o -name "*.exe" 2>/dev/null | head -20
-
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          MACOS_TAR="$(find macos-artifacts -name 'open-flow-aarch64-apple-darwin.tar.gz' -print -quit)"
-          MACOS_ZIP="$(find macos-artifacts -name 'Open-Flow-*.app.zip' -print -quit)"
-          LINUX_TAR="$(find linux-artifact -name 'open-flow-x86_64-unknown-linux-gnu.tar.gz' -print -quit)"
-          WIN_ZIP="$(find windows-artifact -name 'open-flow-x86_64-pc-windows-msvc.zip' -print -quit)"
+          # download-artifact 会把多个 artifact 合并到当前目录，文件在根下
+          MACOS_TAR="open-flow-aarch64-apple-darwin.tar.gz"
+          MACOS_ZIP="$(ls Open-Flow-*-macos-aarch64.app.zip 2>/dev/null | head -1)"
+          LINUX_TAR="open-flow-x86_64-unknown-linux-gnu.tar.gz"
+          WIN_ZIP="open-flow-x86_64-pc-windows-msvc.zip"
           for f in "$MACOS_TAR" "$MACOS_ZIP" "$LINUX_TAR" "$WIN_ZIP"; do
-            [ -n "$f" ] && [ -f "$f" ] || { echo "Missing artifact: $f"; exit 1; }
+            [ -n "$f" ] && [ -f "$f" ] || { echo "Missing: $f"; exit 1; }
           done
           gh release create "${{ steps.tag.outputs.tag }}" \
             "$MACOS_TAR" "$MACOS_ZIP" "$LINUX_TAR" "$WIN_ZIP" \
