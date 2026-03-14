@@ -14,6 +14,53 @@ mod text_injection;
 mod tray;
 
 use cli::commands;
+
+fn is_app_bundle_launch() -> bool {
+    if std::env::args_os().nth(1).is_some() {
+        return false;
+    }
+
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.to_str().map(|s| s.contains(".app/Contents/MacOS/")))
+        .unwrap_or(false)
+}
+
+fn log_launch_context(app_bundle_launch: bool) {
+    let current_exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|e| format!("<unavailable: {e}>"));
+    let args: Vec<String> = std::env::args().collect();
+
+    info!(
+        "Launch context: app_bundle_launch={} current_exe={} args={:?}",
+        app_bundle_launch, current_exe, args
+    );
+}
+
+#[cfg(unix)]
+fn redirect_app_bundle_stdio_to_log() {
+    use std::fs::OpenOptions;
+    use std::os::fd::AsRawFd;
+
+    let Ok(data_dir) = crate::common::config::Config::data_dir() else {
+        return;
+    };
+    let log_path = data_dir.join("daemon.log");
+    let Ok(file) = OpenOptions::new().create(true).append(true).open(log_path) else {
+        return;
+    };
+
+    unsafe {
+        let fd = file.as_raw_fd();
+        let _ = libc::dup2(fd, libc::STDOUT_FILENO);
+        let _ = libc::dup2(fd, libc::STDERR_FILENO);
+    }
+
+    // 保持文件句柄存活到进程结束，避免 stdout/stderr 指向已关闭 fd。
+    std::mem::forget(file);
+}
+
 #[derive(Parser)]
 #[command(name = "open-flow")]
 #[command(about = "AI coding voice input for macOS")]
@@ -104,7 +151,22 @@ fn main() -> anyhow::Result<()> {
         std::env::remove_var("OPEN_FLOW_DAEMON");
     }
 
+    let app_bundle_launch = is_app_bundle_launch();
+
+    if app_bundle_launch {
+        #[cfg(unix)]
+        redirect_app_bundle_stdio_to_log();
+    }
+
     tracing_subscriber::fmt::init();
+    log_launch_context(app_bundle_launch);
+
+    // Finder / Dock 双击启动 .app 时不带子命令，直接进入前台模式。
+    // 这样 app bundle 的主可执行文件就是实际运行的进程，避免权限身份漂移。
+    if app_bundle_launch {
+        info!("Starting Open Flow from app bundle (foreground mode)...");
+        return cli::daemon::start_foreground(None);
+    }
 
     let cli = Cli::parse();
 

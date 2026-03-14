@@ -144,6 +144,15 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
         );
     }
 
+    // ── 先初始化 AppKit / NSApplication，再创建托盘 ────────────────────
+    // tray-icon 在 macOS 上要求主线程事件循环已开始处理事件后再创建 TrayIcon，
+    // 否则状态图标可能根本不显示。
+    #[cfg(target_os = "macos")]
+    {
+        prepare_appkit();
+        pump_run_loop_100ms();
+    }
+
     // ── 在主线程创建托盘（macOS 要求 NSStatusItem 在主线程创建）──────
     let (mut tray, tray_handle) = match TrayState::new() {
         Ok((t, h)) => {
@@ -182,7 +191,10 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     // ── 主线程：驱动 macOS NSRunLoop，让托盘 / 菜单事件得以分发 ──────
     run_main_loop(tray.as_ref());
 
-    // ── 退出前移除菜单栏图标：先 drop TrayIcon，再 pump run loop 让 macOS 处理 NSStatusItem 移除
+    // ── 退出前显式隐藏菜单栏图标并 pump run loop，避免图标残留
+    if let Some(ref t) = tray {
+        t.hide_from_menu_bar();
+    }
     drop(tray.take());
     #[cfg(target_os = "macos")]
     for _ in 0..10 {
@@ -203,6 +215,7 @@ fn run_main_loop(tray: Option<&TrayState>) {
         // 应用 daemon 发来的托盘状态更新（灰/红/黄）
         if let Some(t) = tray {
             t.flush_state_updates();
+            t.flush_menu_events();
         }
 
         // 驱动 macOS NSRunLoop 100ms（分发菜单/托盘事件到回调）
@@ -229,6 +242,23 @@ fn run_main_loop(tray: Option<&TrayState>) {
 /// NSRunLoop::runUntilDate 只处理 run loop sources，无法分发托盘点击事件；
 /// 必须走 NSApplication 的事件队列才能响应 NSStatusItem 点击和菜单。
 #[cfg(target_os = "macos")]
+fn prepare_appkit() {
+    use objc::{class, msg_send, sel, sel_impl};
+    use objc::runtime::Object;
+
+    unsafe {
+        let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            // NSApplicationActivationPolicyRegular = 0
+            let _: () = msg_send![app, setActivationPolicy: 0i64];
+            let _: () = msg_send![app, finishLaunching];
+        });
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn pump_run_loop_100ms() {
     use objc::{class, msg_send, sel, sel_impl};
     use objc::runtime::Object;
@@ -236,12 +266,7 @@ fn pump_run_loop_100ms() {
     unsafe {
         let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
 
-        // 首次调用时设置为"配件"激活策略（无 Dock 图标，纯菜单栏 agent）
-        static INIT: std::sync::Once = std::sync::Once::new();
-        INIT.call_once(|| {
-            // NSApplicationActivationPolicyAccessory = 1
-            let _: () = msg_send![app, setActivationPolicy: 1i64];
-        });
+        prepare_appkit();
 
         let date_cls = class!(NSDate);
         // kCFRunLoopDefaultMode

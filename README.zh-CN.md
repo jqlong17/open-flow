@@ -65,7 +65,24 @@ open-flow start
 
 首次运行会从 [Hugging Face](https://huggingface.co/haixuantao/SenseVoiceSmall-onnx) 下载模型。菜单栏灰色圆点即就绪，按右侧 Command 录音，再按一次转写并粘贴。
 
-**首次使用**：在「系统设置 → 隐私与安全性 → 辅助功能」中为终端开启权限。
+---
+
+## macOS 权限设置
+
+Open Flow 需要以下三项系统权限才能正常工作。**首次启动后请依次在系统设置中手动开启**，每项授权后需完全退出并重新打开 App。
+
+前往 **系统设置 → 隐私与安全性**，依次添加 `Open Flow.app`：
+
+| 权限 | 路径 | 用途 |
+| --- | --- | --- |
+| **麦克风** | 隐私与安全性 → 麦克风 | 录制语音 |
+| **辅助功能** | 隐私与安全性 → 辅助功能 | 监听全局热键（右侧 Command） |
+| **输入监控** | 隐私与安全性 → 输入监控 | 监听全局热键（右侧 Command） |
+
+> **排查提示**：启动日志会打印 `🔎 权限诊断`，`Microphone / Accessibility / Input Monitoring` 均为 `true` 即表示授权完整。实时查看日志：
+> ```bash
+> tail -f ~/Library/Application\ Support/com.openflow.open-flow/daemon.log
+> ```
 
 **平台说明**：一键安装仅提供 **Apple Silicon（M1/M2/M3）** 预编译包。**Intel Mac** 用户请从源码构建。
 

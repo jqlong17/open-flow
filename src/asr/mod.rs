@@ -58,6 +58,15 @@ impl AsrEngine {
         0
     }
 
+    /// 实时口述场景默认优先中文，避免 auto 在短句上误判成韩语/空白。
+    /// 仍可通过 OPEN_FLOW_LANG_ID 显式覆盖。
+    fn resolve_live_language_id() -> i32 {
+        if std::env::var("OPEN_FLOW_LANG_ID").is_ok() {
+            return Self::resolve_language_id(Some("auto"));
+        }
+        Self::resolve_language_id(Some("zh"))
+    }
+
     /// 创建新的 ASR 引擎
     pub fn new(model_path: PathBuf) -> Self {
         info!("🧠 ASR 引擎初始化: {:?}", model_path);
@@ -169,8 +178,12 @@ impl AsrEngine {
 
         // 2. ONNX 推理
         let inference = self.inference.as_mut().unwrap();
-        let language_id = Self::resolve_language_id(Some("auto"));
+        let language_id = Self::resolve_live_language_id();
         let textnorm_id = Self::resolve_textnorm_id();
+        info!(
+            "ASR 推理参数: language_id={} textnorm_id={}",
+            language_id, textnorm_id
+        );
         let (logits, encoder_out_lens) = inference.infer(&features, language_id, textnorm_id)?;
         if std::env::var("OPEN_FLOW_DEBUG_ASR").is_ok() {
             info!("[DEBUG] encoder_out_lens: {:?}", encoder_out_lens);

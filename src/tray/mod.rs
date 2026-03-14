@@ -60,7 +60,6 @@ impl TrayState {
         let icon_transcribing = create_circle_icon(255, 200, 0); // 黄色
 
         let exit_requested = Arc::new(AtomicBool::new(false));
-        let exit_clone = exit_requested.clone();
 
         let (state_tx, state_rx) = std::sync::mpsc::sync_channel::<TrayIconState>(16);
 
@@ -76,27 +75,6 @@ impl TrayState {
             .with_tooltip("Open Flow - 语音输入")
             .with_icon(icon_idle.clone())
             .build()?;
-
-        // 监听菜单点击
-        std::thread::spawn(move || {
-            let receiver = MenuEvent::receiver();
-            loop {
-                match receiver.recv() {
-                    Ok(event) => {
-                        if event.id.as_ref() == "exit" {
-                            info!("用户点击退出菜单");
-                            exit_clone.store(true, Ordering::SeqCst);
-                            break;
-                        } else if event.id.as_ref() == "title" {
-                            let _ = std::process::Command::new("open")
-                                .arg("https://github.com/jqlong17/open-flow")
-                                .spawn();
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
 
         let handle = TrayHandle {
             state_tx,
@@ -128,6 +106,20 @@ impl TrayState {
         }
     }
 
+    /// 由主线程轮询菜单事件，避免额外线程和自定义 AppKit 循环之间的时序问题。
+    pub fn flush_menu_events(&self) {
+        while let Ok(event) = MenuEvent::receiver().try_recv() {
+            if event.id.as_ref() == "exit" {
+                info!("用户点击退出菜单");
+                self.exit_requested.store(true, Ordering::SeqCst);
+            } else if event.id.as_ref() == "title" {
+                let _ = std::process::Command::new("open")
+                    .arg("https://github.com/jqlong17/open-flow")
+                    .spawn();
+            }
+        }
+    }
+
     fn apply_state(&self, state: TrayIconState) {
         let (icon, status_text) = match state {
             TrayIconState::Idle => (&self.icon_idle, "状态：待机"),
@@ -142,6 +134,13 @@ impl TrayState {
 
     pub fn exit_requested(&self) -> bool {
         self.exit_requested.load(Ordering::SeqCst)
+    }
+
+    /// 退出前显式从菜单栏移除图标，避免残留
+    pub fn hide_from_menu_bar(&self) {
+        if let Err(e) = self.tray_icon.set_visible(false) {
+            tracing::warn!("隐藏菜单栏图标失败: {:?}", e);
+        }
     }
 }
 

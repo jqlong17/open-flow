@@ -18,15 +18,8 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
-# 实际二进制放在 MacOS，命名为 open-flow.bin
-cp "$REPO_ROOT/target/release/$BINARY_NAME" "$APP_DIR/Contents/MacOS/open-flow.bin"
-chmod +x "$APP_DIR/Contents/MacOS/open-flow.bin"
-
-# 启动脚本：双击时执行 open-flow start --foreground
-cat > "$APP_DIR/Contents/MacOS/open-flow" << 'LAUNCHER'
-#!/bin/bash
-exec "$(dirname "$0")/open-flow.bin" start --foreground
-LAUNCHER
+# 直接使用 Rust 二进制作为 app 主可执行文件，避免权限记录落在壳脚本上。
+cp "$REPO_ROOT/target/release/$BINARY_NAME" "$APP_DIR/Contents/MacOS/open-flow"
 chmod +x "$APP_DIR/Contents/MacOS/open-flow"
 
 # 图标
@@ -58,10 +51,17 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>LSUIElement</key>
-	<true/>
+	<false/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Open Flow 需要麦克风权限来录制语音并进行实时转写。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Open Flow 使用本地语音识别模型将语音转写为文字。</string>
 </dict>
 </plist>
 EOF
+
+echo "Ad-hoc signing app bundle..."
+codesign --force --deep --sign - "$APP_DIR"
 
 echo "Done: $APP_DIR"
 echo "  Double-click to run (same as: open-flow start --foreground)"

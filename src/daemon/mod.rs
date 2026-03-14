@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::asr::AsrEngine;
 use crate::audio::AudioCapture;
@@ -65,12 +65,43 @@ impl Daemon {
     }
 
     pub async fn run(self) -> Result<()> {
+        let current_exe = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|e| format!("<unavailable: {e}>"));
+        let accessibility_ok = check_accessibility_permission();
+        let input_monitoring_ok = crate::hotkey::check_input_monitoring_permission();
+
+        info!(
+            "Permission diagnostics: current_exe={} accessibility_ok={} input_monitoring_ok={}",
+            current_exe, accessibility_ok, input_monitoring_ok
+        );
+        let microphone_ok = crate::hotkey::check_microphone_permission();
+        println!("🔎 权限诊断");
+        println!("   可执行文件: {}", current_exe);
+        println!("   Accessibility: {}", accessibility_ok);
+        println!("   Input Monitoring: {}", input_monitoring_ok);
+        println!("   Microphone: {}", microphone_ok);
+        if !microphone_ok {
+            println!();
+            println!("⚠️  缺少麦克风权限！录音将为静音，无法转写。");
+            println!("   请前往：系统设置 > 隐私与安全性 > 麦克风");
+            println!("   将 Open Flow.app 添加并启用，然后完全退出并重新打开。");
+        }
+
         // ── Accessibility 权限检查 ───────────────────────────────────
-        if !check_accessibility_permission() {
+        if !accessibility_ok {
+            warn!("Accessibility 权限检查失败，可能是 TCC 将当前可执行文件识别为新身份");
             request_accessibility_permission();
             println!();
-            println!("授权后请重新运行 open-flow start。");
+            println!("授权后请完全退出并重新打开 Open Flow。");
             anyhow::bail!("缺少 Accessibility 权限");
+        }
+        if !input_monitoring_ok {
+            warn!("Input Monitoring 权限检查失败，可能是 TCC 将当前可执行文件识别为新身份");
+            crate::hotkey::request_input_monitoring_permission();
+            println!();
+            println!("授权后请完全退出并重新打开 Open Flow。");
+            anyhow::bail!("缺少 Input Monitoring 权限");
         }
 
         // ── ASR 状态 ─────────────────────────────────────────────────
@@ -266,7 +297,19 @@ impl Daemon {
 
         if buffer.is_empty() {
             self.is_processing.store(false, Ordering::SeqCst);
-            eprintln!("⚠️  录音为空，请检查麦克风权限（系统设置 > 隐私 > 麦克风）");
+            eprintln!("⚠️  录音为空，请检查麦克风权限（系统设置 > 隐私与安全性 > 麦克风）");
+            return Ok(());
+        }
+
+        // 振幅诊断：如果音量过低说明麦克风权限缺失或静音
+        let max_amp = buffer.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+        let rms = (buffer.iter().map(|x| x * x).sum::<f32>() / buffer.len() as f32).sqrt();
+        info!("[Audio] max_amp={:.6} rms={:.6}", max_amp, rms);
+        if max_amp < 0.001 {
+            self.is_processing.store(false, Ordering::SeqCst);
+            eprintln!("⚠️  录音振幅极低（max={:.6}），麦克风可能未授权。", max_amp);
+            eprintln!("   请前往：系统设置 > 隐私与安全性 > 麦克风，将 Open Flow.app 添加到列表并启用。");
+            eprintln!("   然后完全退出并重新打开 Open Flow。");
             return Ok(());
         }
 

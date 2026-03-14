@@ -65,7 +65,24 @@ open-flow start
 
 First run downloads the model from [Hugging Face](https://huggingface.co/haixuantao/SenseVoiceSmall-onnx). Gray dot in menu bar = ready. Right Command to record, again to transcribe and paste.
 
-**First use**: Grant Accessibility in System Settings → Privacy & Security → Accessibility.
+---
+
+## macOS Permissions
+
+Open Flow requires three system permissions. **After first launch, grant each one manually** in System Settings, then fully quit and reopen the app.
+
+Go to **System Settings → Privacy & Security** and add `Open Flow.app` to each:
+
+| Permission | Path | Purpose |
+| --- | --- | --- |
+| **Microphone** | Privacy & Security → Microphone | Record audio |
+| **Accessibility** | Privacy & Security → Accessibility | Listen for global hotkey (Right Command) |
+| **Input Monitoring** | Privacy & Security → Input Monitoring | Listen for global hotkey (Right Command) |
+
+> **Troubleshooting tip**: At startup the log prints `🔎 权限诊断`. All three values (`Microphone / Accessibility / Input Monitoring`) must be `true` for full functionality. View live logs:
+> ```bash
+> tail -f ~/Library/Application\ Support/com.openflow.open-flow/daemon.log
+> ```
 
 **Platform**: One-click install provides **Apple Silicon (M1/M2/M3)** prebuilt binaries only. **Intel Mac** users: build from source below.
 

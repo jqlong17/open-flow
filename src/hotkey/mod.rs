@@ -30,6 +30,95 @@ impl HotkeyListener {
     }
 
     fn run_listen_loop(sender: Sender<HotkeyEvent>) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            return Self::run_listen_loop_macos(sender);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            return Self::run_listen_loop_rdev(sender);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn run_listen_loop_macos(sender: Sender<HotkeyEvent>) -> Result<()> {
+        use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
+        use core_graphics::event::{
+            CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventType, EventField,
+            KeyCode,
+        };
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+
+        let pressed = Arc::new(AtomicBool::new(false));
+        let pressed_clone = pressed.clone();
+        let press_count = Arc::new(AtomicU64::new(0));
+        let release_count = Arc::new(AtomicU64::new(0));
+        let pc = press_count.clone();
+        let rc = release_count.clone();
+
+        println!("⌨️  热键监听器已启动（CGEventTap）");
+
+        let current = CFRunLoop::get_current();
+        let tap = CGEventTap::new(
+            CGEventTapLocation::HID,
+            core_graphics::event::CGEventTapPlacement::HeadInsertEventTap,
+            CGEventTapOptions::ListenOnly,
+            vec![CGEventType::FlagsChanged],
+            move |_proxy, event_type, event| {
+                if event_type as u32 != CGEventType::FlagsChanged as u32 {
+                    return None;
+                }
+
+                let keycode =
+                    event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
+                if keycode != KeyCode::RIGHT_COMMAND {
+                    return None;
+                }
+
+                let is_pressed = event.get_flags().contains(CGEventFlags::CGEventFlagCommand);
+                if is_pressed {
+                    let was = pressed_clone.swap(true, Ordering::SeqCst);
+                    if !was {
+                        let n = pc.fetch_add(1, Ordering::SeqCst) + 1;
+                        info!(
+                            "[Hotkey] 事件 #press={} 按下（右侧 Command）was_pressed={} -> 发送",
+                            n, was
+                        );
+                        if let Err(e) = sender.send(HotkeyEvent) {
+                            error!("发送热键事件失败: {}", e);
+                        }
+                    }
+                } else {
+                    let was = pressed_clone.swap(false, Ordering::SeqCst);
+                    if was {
+                        let n = rc.fetch_add(1, Ordering::SeqCst) + 1;
+                        info!(
+                            "[Hotkey] 事件 #release={} 松开（右侧 Command）was_pressed={}",
+                            n, was
+                        );
+                    }
+                }
+
+                None
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("CGEventTap 创建失败，请确认已授予辅助功能和输入监控权限"))?;
+
+        let loop_source = tap
+            .mach_port
+            .create_runloop_source(0)
+            .map_err(|_| anyhow::anyhow!("无法创建 CGEventTap RunLoopSource"))?;
+        unsafe {
+            current.add_source(&loop_source, kCFRunLoopCommonModes);
+        }
+        tap.enable();
+        CFRunLoop::run_current();
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn run_listen_loop_rdev(sender: Sender<HotkeyEvent>) -> Result<()> {
         use rdev::{listen, Event, EventType, Key};
         use std::sync::atomic::{AtomicBool, AtomicU64};
 
@@ -103,27 +192,71 @@ pub fn check_accessibility_permission() -> bool {
     }
 }
 
-/// 请求 Accessibility 权限（弹出系统提示框）
-pub fn request_accessibility_permission() {
+/// 检查是否已授予 Input Monitoring 权限（macOS 监听全局键盘事件需要）
+pub fn check_input_monitoring_permission() -> bool {
     #[cfg(target_os = "macos")]
     {
-        use core_foundation::base::TCFType;
-        use core_foundation::dictionary::CFDictionary;
-        use core_foundation::string::CFString;
-        use core_foundation::boolean::CFBoolean;
-
-        extern "C" {
-            fn AXIsProcessTrustedWithOptions(options: core_foundation::dictionary::CFDictionaryRef) -> bool;
+        #[link(name = "ApplicationServices", kind = "framework")]
+        unsafe extern "C" {
+            fn CGPreflightListenEventAccess() -> bool;
         }
-        let key = CFString::new("AXTrustedCheckOptionPrompt");
-        let val = CFBoolean::true_value(); // true → 触发系统弹窗
-        let options = CFDictionary::from_CFType_pairs(&[(key.as_CFType(), val.as_CFType())]);
-        unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()); }
+
+        unsafe { CGPreflightListenEventAccess() }
     }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// 提示用户手动授予 Accessibility 权限（不主动弹系统框）
+pub fn request_accessibility_permission() {
     warn!("需要 Accessibility 权限才能监听全局热键");
     println!("⚠️  需要 Accessibility 权限");
     println!("请前往：系统设置 > 隐私与安全性 > 辅助功能");
-    println!("将终端应用（Terminal / iTerm）添加到列表并启用，然后重新运行。");
+    println!("将 Open Flow.app 添加到列表并启用，然后完全退出后重新打开应用。");
+}
+
+/// 提示用户手动授予 Input Monitoring 权限（不主动弹系统框）
+pub fn request_input_monitoring_permission() {
+    warn!("需要 Input Monitoring 权限才能监听全局热键");
+    println!("⚠️  需要“输入监控”权限");
+    println!("请前往：系统设置 > 隐私与安全性 > 输入监控");
+    println!("将 Open Flow.app 添加到列表并启用，然后完全退出后重新打开应用。");
+}
+
+/// 检查麦克风权限状态。
+/// 返回 true 表示已授权（AVAuthorizationStatusAuthorized）。
+/// 未确定（0）时返回 false——首次运行需 NSMicrophoneUsageDescription 触发系统弹框。
+pub fn check_microphone_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use objc::{class, msg_send, sel, sel_impl};
+        use objc::runtime::Object;
+
+        // 链接 AVFoundation 框架（仅需声明，不需要 extern fn）
+        #[link(name = "AVFoundation", kind = "framework")]
+        extern "C" {}
+
+        unsafe {
+            // AVMediaTypeAudio = @"soun"
+            let ns_string_cls = class!(NSString);
+            let audio_type: *mut Object =
+                msg_send![ns_string_cls, stringWithUTF8String: b"soun\0".as_ptr() as *const i8];
+
+            // [AVCaptureDevice authorizationStatusForMediaType:] → i64
+            // 0=NotDetermined 1=Restricted 2=Denied 3=Authorized
+            let status: i64 =
+                msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: audio_type];
+
+            info!("Microphone TCC status: {}", status);
+            status == 3
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
 }
 
 #[cfg(test)]
