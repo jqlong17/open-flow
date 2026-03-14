@@ -1,6 +1,6 @@
 [package]
 name = "open-flow"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 authors = ["Open Flow Contributors"]
 description = "AI coding voice input daemon for macOS - macOS 全局语音输入工具"
