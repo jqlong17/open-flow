@@ -93,20 +93,12 @@ struct ContentView: View {
 
             // Daemon controls
             if config.daemonRunning {
-                Button("Restart") { config.restartDaemon() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                Button("Stop") { config.stopDaemon() }
+                Button("Quit Open Flow") { config.quitApp() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .tint(.red)
-                Button("Force Quit") { config.forceQuitAll() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(.red)
-                    .help("Kill all open-flow processes")
             } else {
-                Button("Start Daemon") { config.startDaemon() }
+                Button("Open App") { config.startDaemon() }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
             }

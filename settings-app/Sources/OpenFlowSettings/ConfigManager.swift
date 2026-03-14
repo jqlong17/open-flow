@@ -61,8 +61,18 @@ class ConfigManager: ObservableObject {
 
         // Poll daemon status and permissions every 3 seconds
         statusTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            self?.refreshStatus()
-            self?.refreshPermissions()
+            guard let self = self else { return }
+            let wasRunningBefore = self.daemonRunning
+            self.refreshStatus()
+            self.refreshPermissions()
+
+            // If daemon just died (was running, now isn't), quit settings app
+            // The daemon kills us on exit anyway, but this handles edge cases
+            if wasRunningBefore && !self.daemonRunning {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    NSApplication.shared.terminate(nil)
+                }
+            }
         }
     }
 
@@ -436,6 +446,19 @@ class ConfigManager: ObservableObject {
         }
         try? FileManager.default.removeItem(at: pidPath)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.refreshStatus()
+        }
+    }
+
+    /// Quit the Open Flow app (daemon). Sends SIGTERM to the daemon PID.
+    func quitApp() {
+        let pidPath = dataDir.appendingPathComponent("daemon.pid")
+        if let pidStr = try? String(contentsOf: pidPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+           let pid = Int32(pidStr) {
+            kill(pid, SIGTERM)
+        }
+        // Daemon's signal handler will trigger clean exit with process::exit(0)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             self?.refreshStatus()
         }
     }

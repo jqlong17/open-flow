@@ -273,8 +273,13 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     // ── 退出清理 ──────────────────────────────────────────────────────
     remove_pid_file();
 
+    // 关闭设置应用（它在 .app bundle 内，不关闭会导致 bundle 被占用无法替换）
+    let _ = std::process::Command::new("pkill")
+        .args(["-x", "OpenFlowSettings"])
+        .output();
+
     // 给 daemon 线程短时间优雅退出
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
         if daemon_handle.is_finished() {
             break;
