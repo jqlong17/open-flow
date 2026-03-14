@@ -31,9 +31,27 @@ fn read_pid() -> Option<u32> {
     s.trim().parse::<u32>().ok()
 }
 
-/// 用 kill(pid, 0) 探测进程是否存在
+/// 探测进程是否存在（Unix: kill(pid,0)；Windows: OpenProcess + GetExitCodeProcess）
 fn is_running(pid: u32) -> bool {
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE,
+        };
+        let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if h.is_null() {
+            return false;
+        }
+        let mut code: u32 = 0;
+        let ok = unsafe { GetExitCodeProcess(h as HANDLE, &mut code) != 0 };
+        unsafe { CloseHandle(h as HANDLE) };
+        ok && code == STILL_ACTIVE
+    }
 }
 
 /// 删除 PID 文件（忽略错误）
@@ -130,19 +148,11 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     let my_pid = std::process::id();
     let _ = fs::write(pid_path()?, my_pid.to_string());
 
-    // ── 注册信号处理（SIGTERM/SIGINT → 设置 flag，由主循环正常退出）─────
-    // 不在 handler 里调用 process::exit，确保 TrayIcon drop 和 run loop pump 能执行
-    #[cfg(unix)]
-    unsafe {
-        libc::signal(
-            libc::SIGTERM,
-            sigterm_handler as *const () as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGINT,
-            sigterm_handler as *const () as libc::sighandler_t,
-        );
-    }
+    // ── 注册 Ctrl+C / 信号处理 → 设置 flag，由主循环正常退出 ─────────────────
+    // 使用 ctrlc 跨平台（Unix: SIGINT/SIGTERM；Windows: SetConsoleCtrlHandler）
+    let _ = ctrlc::set_handler(move || {
+        SIGNAL_SHUTDOWN.store(true, Ordering::SeqCst);
+    });
 
     // ── 先初始化 AppKit / NSApplication，再创建托盘 ────────────────────
     // tray-icon 在 macOS 上要求主线程事件循环已开始处理事件后再创建 TrayIcon，
@@ -170,7 +180,12 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     let log = log_path()?;
     println!("✅ Open Flow 已启动 (PID: {})", my_pid);
     println!("   模型: {:?}", model_path);
+    #[cfg(target_os = "macos")]
     println!("   热键: 右 Command（固定）");
+    #[cfg(target_os = "windows")]
+    println!("   热键: 右侧 Win 键（固定）");
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    println!("   热键: 右 Meta/Super（固定）");
     println!("   日志: {}", log.display());
     println!();
     println!("   按 Ctrl+C 或托盘菜单「退出」可停止");
@@ -322,20 +337,36 @@ pub async fn stop() -> Result<()> {
     }
 
     println!("⏹️  正在停止 daemon (PID: {})...", pid);
-    unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
 
-    for _ in 0..30 {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        if !is_running(pid) {
-            remove_pid_file();
-            println!("✅ daemon 已停止");
-            return Ok(());
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if !is_running(pid) {
+                remove_pid_file();
+                println!("✅ daemon 已停止");
+                return Ok(());
+            }
         }
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
     }
 
-    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-    remove_pid_file();
-    println!("✅ daemon 已强制终止 (SIGKILL)");
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+        let h = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+        if !h.is_null() {
+            unsafe {
+                let _ = TerminateProcess(h as HANDLE, 0);
+                CloseHandle(h as HANDLE);
+            }
+        }
+        remove_pid_file();
+        println!("✅ daemon 已停止");
+    }
+
     Ok(())
 }
 
@@ -354,7 +385,12 @@ pub async fn status() -> Result<()> {
             println!("  PID:    {}", pid);
             println!("  运行:   {}", uptime);
             println!("  模型:   {:?}", config.model_path.unwrap_or_default());
+            #[cfg(target_os = "macos")]
             println!("  热键:   右 Command（固定）");
+            #[cfg(target_os = "windows")]
+            println!("  热键:   右侧 Win 键（固定）");
+            #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+            println!("  热键:   右 Meta/Super（固定）");
             println!("  日志:   {}", log_path()?.display());
         }
         Some(pid) => {
@@ -371,20 +407,21 @@ pub async fn status() -> Result<()> {
     Ok(())
 }
 
-/// SIGTERM / SIGINT 信号处理器
-/// 只设置 flag，由主线程的 run_main_loop 检测后走正常退出路径（drop tray → pump run loop）
-#[cfg(unix)]
-extern "C" fn sigterm_handler(_: libc::c_int) {
-    SIGNAL_SHUTDOWN.store(true, Ordering::SeqCst);
-}
-
-/// 用 ps 获取进程启动时间（仅用于展示）
+/// 用 ps 获取进程启动时间（仅用于展示；Windows 返回 N/A）
 fn get_uptime_str(pid: u32) -> String {
-    let out = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "etime="])
-        .output();
-    match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        _ => "未知".to_string(),
+    #[cfg(unix)]
+    {
+        let out = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "etime="])
+            .output();
+        match out {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            _ => "未知".to_string(),
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _ = pid;
+        "N/A".to_string()
     }
 }

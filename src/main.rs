@@ -18,14 +18,21 @@ mod daemon;
 use cli::commands;
 
 fn is_app_bundle_launch() -> bool {
-    if std::env::args_os().nth(1).is_some() {
-        return false;
+    #[cfg(not(target_os = "macos"))]
+    {
+        return false; // 仅 macOS 有 .app 包，Windows/Linux 始终走 CLI
     }
 
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.to_str().map(|s| s.contains(".app/Contents/MacOS/")))
-        .unwrap_or(false)
+    #[cfg(target_os = "macos")]
+    {
+        if std::env::args_os().nth(1).is_some() {
+            return false;
+        }
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.to_str().map(|s| s.contains(".app/Contents/MacOS/")))
+            .unwrap_or(false)
+    }
 }
 
 fn log_launch_context(app_bundle_launch: bool) {

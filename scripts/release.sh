@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# 一键发版：打 CLI tar.gz + .app zip，并创建 GitHub Release
+# 一键发版：打 CLI tar.gz + .app zip，并创建 GitHub Release（仅 macOS）
 # 用法：先改 Cargo.toml version，commit 并 push，再执行 ./scripts/release.sh [可选：release notes]
+#
+# 若需要同时发布 macOS + Linux + Windows：先不要执行本脚本，改为只打 tag 并推送：
+#   git tag vX.Y.Z && git push origin vX.Y.Z
+# 然后由 GitHub Actions（.github/workflows/release.yml）自动构建三端并创建 Release（macOS 含 .app，Linux/Windows 仅 CLI）。
 set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"

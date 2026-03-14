@@ -61,6 +61,7 @@ We believe **only open source enables real participation**: inspect the code, ch
 | macOS Intel | Build from source | ✅ | ✅ osascript |
 | Linux (X11) | Build from source | — | ✅ xdotool |
 | Linux (Wayland) | Build from source | — | ✅ wtype |
+| Windows | Build from source / Releases | — | Clipboard (Ctrl+V to paste) |
 
 ---
 
@@ -124,6 +125,41 @@ Downloads ~230MB model on first run. Then press Right Meta (Super) to record, pr
 > ```bash
 > sudo usermod -aG input $USER   # re-login to take effect
 > ```
+
+### Windows
+
+Windows is supported in **CLI mode only** (no tray icon). Transcription is copied to the clipboard; press **Ctrl+V** in the target window to paste.
+
+**1. Install Rust** (skip if already installed)
+
+Install from [rustup.rs](https://rustup.rs/) or e.g. `winget install Rustlang.Rustup`, then restart the terminal.
+
+**2. Clone and build**
+
+```powershell
+git clone https://github.com/jqlong17/open-flow.git
+cd open-flow
+cargo build --release
+```
+
+Binary: `target\release\open-flow.exe`. Add to PATH or copy to a folder in PATH.
+
+**3. First run** (downloads model and starts)
+
+```powershell
+.\target\release\open-flow.exe start --foreground
+```
+
+First run downloads ~230MB model. Hotkey: **Right Win key** — press to start recording, press again to stop and transcribe; result is in the clipboard, press **Ctrl+V** to paste.
+
+| Command | Description |
+|---------|-------------|
+| `open-flow.exe start` | Start in background |
+| `open-flow.exe start --foreground` | Start in foreground (Ctrl+C to stop) |
+| `open-flow.exe stop` | Stop background daemon |
+| `open-flow.exe transcribe --duration 5` | One-shot record 5s and transcribe |
+
+> **Note**: On Windows, global hotkey (rdev) may require **Run as administrator** in some apps. If it doesn’t work, use the `transcribe` command for one-shot recording.
 
 ---
 

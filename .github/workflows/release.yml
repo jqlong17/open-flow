@@ -1,0 +1,134 @@
+# 在 push tag v* 时构建 macOS（CLI + .app）+ Linux（CLI）+ Windows（CLI）并创建 GitHub Release
+# 用法：改 Cargo.toml version → commit & push → git tag vX.Y.Z → git push origin vX.Y.Z
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Read version
+        id: version
+        run: echo "version=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/' | tr -d ' ')" >> $GITHUB_OUTPUT
+
+      - name: Package CLI tar.gz
+        run: |
+          mkdir -p dist
+          cp target/release/open-flow dist/
+          (cd dist && tar -czf "open-flow-aarch64-apple-darwin.tar.gz" open-flow)
+
+      - name: Build .app and zip
+        run: |
+          chmod +x scripts/build-app.sh
+          ./scripts/build-app.sh
+          (cd dist && zip -rq "Open-Flow-${{ steps.version.outputs.version }}-macos-aarch64.app.zip" "Open Flow.app")
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: |
+            dist/open-flow-aarch64-apple-darwin.tar.gz
+            dist/Open-Flow-*.app.zip
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Package zip
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Compress-Archive -Path target/release/open-flow.exe -DestinationPath "dist/open-flow-x86_64-pc-windows-msvc.zip"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifact
+          path: dist/open-flow-x86_64-pc-windows-msvc.zip
+
+  build-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install Linux deps (ALSA for cpal)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Package CLI tar.gz
+        run: |
+          mkdir -p dist
+          cp target/release/open-flow dist/
+          (cd dist && tar -czf "open-flow-x86_64-unknown-linux-gnu.tar.gz" open-flow)
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifact
+          path: dist/open-flow-x86_64-unknown-linux-gnu.tar.gz
+
+  release:
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-artifacts
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-artifact
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-artifact
+
+      - name: Get tag
+        id: tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            macos-artifacts/open-flow-aarch64-apple-darwin.tar.gz \
+            macos-artifacts/Open-Flow-*.app.zip \
+            linux-artifact/open-flow-x86_64-unknown-linux-gnu.tar.gz \
+            windows-artifact/open-flow-x86_64-pc-windows-msvc.zip \
+            --title "${{ steps.tag.outputs.tag }}" \
+            --notes "## ${{ steps.tag.outputs.tag }}
+
+          - **macOS (Apple Silicon)**：\`open-flow-aarch64-apple-darwin.tar.gz\`（CLI）或 \`Open-Flow-*-macos-aarch64.app.zip\`（.app 双击运行）
+          - **Linux (x86_64)**：\`open-flow-x86_64-unknown-linux-gnu.tar.gz\`（CLI），解压后 \`open-flow start --foreground\`，热键右 Meta，粘贴需 xdotool/wtype
+          - **Windows (x86_64)**：\`open-flow-x86_64-pc-windows-msvc.zip\`（CLI），解压得到 \`open-flow.exe\`，\`open-flow.exe start --foreground\`，热键右侧 Win 键，转写结果剪贴板（Ctrl+V 粘贴）
+          "
