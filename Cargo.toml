@@ -67,7 +67,7 @@ cocoa = "0.25"
 objc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_System_Threading", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.52", features = ["Win32_System_Threading", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Console"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux 托盘（tray-icon 用 libappindicator）需主线程跑 glib 事件循环

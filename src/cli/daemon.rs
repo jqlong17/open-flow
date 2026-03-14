@@ -150,10 +150,22 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     let _ = fs::write(pid_path()?, my_pid.to_string());
 
     // ── 注册 Ctrl+C / 信号处理 → 设置 flag，由主循环正常退出 ─────────────────
-    // 使用 ctrlc 跨平台（Unix: SIGINT/SIGTERM；Windows: SetConsoleCtrlHandler）
-    let _ = ctrlc::set_handler(move || {
-        SIGNAL_SHUTDOWN.store(true, Ordering::SeqCst);
-    });
+    #[cfg(not(windows))]
+    {
+        // Unix: SIGINT/SIGTERM
+        let _ = ctrlc::set_handler(move || {
+            SIGNAL_SHUTDOWN.store(true, Ordering::SeqCst);
+        });
+    }
+    #[cfg(windows)]
+    {
+        // Windows: SetConsoleCtrlHandler 必须返回 TRUE(1) 表示已处理，否则进程会被系统终止
+        use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+        unsafe {
+            let handler = Some(win32_ctrl_handler as _);
+            SetConsoleCtrlHandler(handler, true);
+        }
+    }
 
     // ── 先初始化 AppKit / NSApplication，再创建托盘 ────────────────────
     // tray-icon 在 macOS 上要求主线程事件循环已开始处理事件后再创建 TrayIcon，
@@ -265,6 +277,17 @@ fn run_main_loop(tray: Option<&TrayState>) {
 fn pump_glib_linux() {
     let ctx = glib::MainContext::default();
     while ctx.iteration(false) {}
+}
+
+/// Windows：Ctrl+C/Ctrl+Break 控制台处理例程；返回 1(TRUE) 表示已处理，阻止系统默认终止进程。
+#[cfg(windows)]
+unsafe extern "system" fn win32_ctrl_handler(dw_ctrl_type: u32) -> i32 {
+    if dw_ctrl_type == 0 /* CTRL_C_EVENT */ || dw_ctrl_type == 1 /* CTRL_BREAK_EVENT */ {
+        SIGNAL_SHUTDOWN.store(true, Ordering::SeqCst);
+        1i32 // TRUE：已处理，不要调用下一个 handler 或 ExitProcess
+    } else {
+        0i32 // FALSE：未处理，交给其他 handler
+    }
 }
 
 /// Windows：处理当前线程消息队列，使托盘图标和菜单能响应点击。

@@ -170,7 +170,10 @@ impl Daemon {
         );
         println!("   模型路径: {:?}", self.model_path);
         println!();
+        #[cfg(target_os = "macos")]
         println!("🎙️  按右侧 Command 键开始录音，再按一次停止并转写");
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        println!("🎙️  按右侧 Alt 键开始录音，再按一次停止并转写");
         println!("   托盘图标可查看状态（灰=待机 红=录音 黄=转写）");
         println!();
 
@@ -268,7 +271,10 @@ impl Daemon {
         state.start_time = Some(std::time::Instant::now());
 
         info!("[Hotkey] 录音已启动");
+        #[cfg(target_os = "macos")]
         println!("🔴 录音中... 再按右侧 Command 键停止");
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        println!("🔴 录音中... 再按右侧 Alt 键停止");
         Ok(())
     }
 
