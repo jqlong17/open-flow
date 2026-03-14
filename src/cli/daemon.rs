@@ -178,17 +178,30 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     }
 
     // ── 在主线程创建托盘（macOS 菜单栏 / Windows·Linux 系统托盘）────────────────────
-    let (mut tray, tray_handle) = match TrayState::new() {
+    let (mut tray, mut tray_handle_raw) = match TrayState::new() {
         Ok((t, h)) => {
             t.set_state(TrayIconState::Idle);
             tracing::info!("✅ 托盘图标已创建");
-            (Some(t), Some(Arc::new(h)))
+            (Some(t), Some(h))
         }
         Err(e) => {
             tracing::warn!("托盘图标创建失败: {}，继续运行（无托盘）", e);
             (None, None)
         }
     };
+
+    // ── 创建浮动指示器（overlay）──────────────────────────────────────
+    use crate::overlay::OverlayWindow;
+    let overlay = OverlayWindow::new();
+    let (overlay_tx, overlay_rx) = std::sync::mpsc::sync_channel::<TrayIconState>(16);
+    // 在包装为 Arc 之前设置 overlay sender
+    if let Some(ref mut handle) = tray_handle_raw {
+        handle.set_overlay_sender(overlay_tx);
+    }
+    let tray_handle = tray_handle_raw.map(Arc::new);
+    if overlay.is_some() {
+        tracing::info!("✅ 浮动指示器已创建");
+    }
 
     // ── 构建 ASR provider ──────────────────────────────────────────
     let config = Config::load().unwrap_or_default();
@@ -239,7 +252,7 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     });
 
     // ── 主线程：驱动 macOS NSRunLoop，让托盘 / 菜单事件得以分发 ──────
-    run_main_loop(tray.as_ref(), &daemon_alive);
+    run_main_loop(tray.as_ref(), overlay.as_ref(), &overlay_rx, &daemon_alive);
 
     // ── 退出前显式隐藏菜单栏图标并 pump run loop，避免图标残留
     if let Some(ref t) = tray {
@@ -273,6 +286,8 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
 /// 这是让 tray-icon 在 macOS 上正常渲染和响应菜单的关键。
 fn run_main_loop(
     tray: Option<&TrayState>,
+    overlay: Option<&crate::overlay::OverlayWindow>,
+    overlay_rx: &std::sync::mpsc::Receiver<TrayIconState>,
     daemon_alive: &AtomicBool,
 ) {
     loop {
@@ -282,17 +297,18 @@ fn run_main_loop(
             t.flush_menu_events();
         }
 
+        // 应用 overlay 状态更新
+        while let Ok(state) = overlay_rx.try_recv() {
+            if let Some(o) = overlay {
+                o.update_state(state);
+            }
+        }
+
         // 驱动平台事件循环：macOS NSRunLoop；Windows Win32；Linux glib
         #[cfg(target_os = "macos")]
         pump_run_loop_100ms();
 
-        #[cfg(target_os = "windows")]
-        pump_win32_messages();
-
-        #[cfg(target_os = "linux")]
-        pump_glib_linux();
-
-        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        #[cfg(not(target_os = "macos"))]
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         // 托盘菜单「退出」
@@ -309,32 +325,6 @@ fn run_main_loop(
         if !daemon_alive.load(Ordering::SeqCst) {
             tracing::error!("Daemon 线程已意外退出");
             break;
-        }
-    }
-}
-
-/// Linux：处理 glib 主上下文，使托盘图标和菜单能响应点击。
-#[cfg(target_os = "linux")]
-fn pump_glib_linux() {
-    let ctx = glib::MainContext::default();
-    while ctx.iteration(false) {}
-}
-
-/// Windows：处理当前线程消息队列，使托盘图标和菜单能响应点击。
-#[cfg(target_os = "windows")]
-fn pump_win32_messages() {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
-    };
-
-    let mut msg = MSG::default();
-    while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
-        if msg.message == WM_QUIT {
-            break;
-        }
-        unsafe {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
         }
     }
 }

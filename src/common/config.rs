@@ -28,6 +28,9 @@ pub struct Config {
     /// Trigger mode: "toggle" or "hold"
     #[serde(default = "default_trigger_mode")]
     pub trigger_mode: String,
+    /// Convert simplified Chinese to traditional: "none", "s2t" (simplified->traditional), "t2s" (traditional->simplified)
+    #[serde(default)]
+    pub chinese_conversion: String,
 }
 
 fn default_provider() -> String {
@@ -53,6 +56,7 @@ impl Default for Config {
             groq_language: String::new(),
             hotkey: default_hotkey(),
             trigger_mode: default_trigger_mode(),
+            chinese_conversion: String::new(),
         }
     }
 }
