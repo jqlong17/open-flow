@@ -389,5 +389,123 @@ mod tests {
         let audio = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let result = preemphasis(&audio, 0.97);
         assert_eq!(result.len(), audio.len());
+        // 第一帧不变
+        assert!((result[0] - 1.0).abs() < 1e-6);
+        // 第二帧 = 2.0 - 0.97 * 1.0 = 1.03
+        assert!((result[1] - 1.03f32).abs() < 1e-5);
+    }
+
+    /// 重采样后样本数与时长一致
+    #[test]
+    fn test_resample_preserves_duration() {
+        let from_rate = 48000u32;
+        let to_rate = TARGET_SAMPLE_RATE; // 16000
+        let n_input = 48000usize; // 1秒
+        let audio: Vec<f32> = (0..n_input).map(|i| (i as f32 / n_input as f32).sin()).collect();
+
+        let output = resample_audio(&audio, from_rate, to_rate).unwrap();
+        let expected = (n_input as f64 * to_rate as f64 / from_rate as f64).round() as usize;
+        assert_eq!(output.len(), expected,
+            "重采样后样本数应为 {}，got {}", expected, output.len());
+    }
+
+    /// 重采样 48kHz 2.6s → 16kHz，样本数在合理范围
+    #[test]
+    fn test_resample_48k_2_6s_to_16k() {
+        let from_rate = 48000u32;
+        let to_rate = TARGET_SAMPLE_RATE;
+        let samples_48k = 126976usize; // 实测日志值
+        let audio = vec![0.1f32; samples_48k];
+
+        let output = resample_audio(&audio, from_rate, to_rate).unwrap();
+        // 期望 ~42325 样本（2.64s * 16000）
+        assert!(output.len() > 40000 && output.len() < 45000,
+            "16kHz 重采样结果应在 40000~45000 范围，got {}", output.len());
+    }
+
+    /// 空音频重采样不 panic，返回空
+    #[test]
+    fn test_resample_empty_audio() {
+        let result = resample_audio(&[], 48000, TARGET_SAMPLE_RATE).unwrap();
+        assert!(result.is_empty(), "空音频重采样应返回空 Vec");
+    }
+
+    /// 分帧数量计算正确
+    #[test]
+    fn test_frame_count_calculation() {
+        let sample_rate = TARGET_SAMPLE_RATE as usize; // 16000
+        let duration_samples = sample_rate * 2; // 2秒
+        let audio: Vec<f32> = vec![0.0; duration_samples];
+
+        let frame_size = (FRAME_LENGTH_MS / 1000.0 * TARGET_SAMPLE_RATE as f32) as usize; // 400
+        let hop = (FRAME_SHIFT_MS / 1000.0 * TARGET_SAMPLE_RATE as f32) as usize;         // 160
+
+        let frames = frame_audio(&audio, frame_size, hop).unwrap();
+        let expected = (duration_samples - frame_size) / hop + 1;
+        assert_eq!(frames.nrows(), expected,
+            "分帧数应为 {}，got {}", expected, frames.nrows());
+    }
+
+    /// LFR 输出帧数 < 输入帧数（n=6 下采样）
+    #[test]
+    fn test_lfr_reduces_frame_count() {
+        let t = 200usize; // 200 输入帧
+        let feat_dim = N_MELS;
+        let input = ndarray::Array2::zeros((t, feat_dim));
+
+        let lfr = apply_lfr(&input, LFR_M, LFR_N).unwrap();
+        // 输出帧数 ≈ t/n（含左填充）
+        let left_pad = (LFR_M - 1) / 2;
+        let expected = (t + left_pad + LFR_N - 1) / LFR_N;
+        assert_eq!(lfr.nrows(), expected,
+            "LFR 输出帧数应为 {}，got {}", expected, lfr.nrows());
+        assert_eq!(lfr.ncols(), N_MELS * LFR_M,
+            "LFR 特征维度应为 {}，got {}", N_MELS * LFR_M, lfr.ncols());
+        assert!(lfr.nrows() < t, "LFR 应减少帧数");
+    }
+
+    /// CMVN 维度匹配时正常处理，不匹配时报错
+    #[test]
+    fn test_cmvn_dimension_check() {
+        let dim = N_MELS * LFR_M; // 560
+        let mut features = ndarray::Array2::zeros((10, dim));
+
+        // 正确维度
+        let shift = vec![0.0f32; dim];
+        let scale = vec![1.0f32; dim];
+        assert!(apply_cmvn(&mut features, &shift, &scale).is_ok());
+
+        // 维度不匹配
+        let bad_shift = vec![0.0f32; 100];
+        let bad_scale = vec![1.0f32; 100];
+        assert!(apply_cmvn(&mut features, &bad_shift, &bad_scale).is_err(),
+            "CMVN 维度不匹配应返回 Err");
+    }
+
+    /// 全零样本经过预处理管线不 panic
+    #[test]
+    fn test_preprocessor_silent_audio_no_panic() {
+        let pre = AudioPreprocessor::new(TARGET_SAMPLE_RATE);
+        // 3秒全零 16kHz（模拟静音）
+        let silent = vec![0.0f32; TARGET_SAMPLE_RATE as usize * 3];
+        let result = pre.process(&silent, TARGET_SAMPLE_RATE);
+        assert!(result.is_ok(), "全零样本预处理不应 panic，got: {:?}", result.err());
+    }
+
+    /// 48kHz 音频输入自动重采样到 16kHz
+    #[test]
+    fn test_preprocessor_resamples_48k_input() {
+        let pre = AudioPreprocessor::new(TARGET_SAMPLE_RATE);
+        // 1秒 48kHz 正弦波
+        use std::f32::consts::PI;
+        let audio: Vec<f32> = (0..48000)
+            .map(|i| (2.0 * PI * 440.0 * i as f32 / 48000.0).sin() * 0.1)
+            .collect();
+        let result = pre.process(&audio, 48000);
+        assert!(result.is_ok(), "48kHz 音频预处理不应失败，got: {:?}", result.err());
+        let features = result.unwrap();
+        // 特征维度应为 N_MELS * LFR_M = 560
+        assert_eq!(features.ncols(), N_MELS * LFR_M);
+        assert!(features.nrows() > 0, "特征帧数应 > 0");
     }
 }

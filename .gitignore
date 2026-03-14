@@ -8,7 +8,8 @@ python/__pycache__/
 # Cursor IDE
 .cursor/
 
-# 测试数据（回归用，本地保留即可）
+# 测试用例与数据（本地回归用，不提交 GitHub）
+tests/
 testdata/
 
 # macOS

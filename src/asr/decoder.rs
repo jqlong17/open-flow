@@ -229,4 +229,95 @@ mod tests {
         let result = decoder.decode(&logits, false);
         assert_eq!(result, "ab");
     }
+
+    fn make_decoder(tokens: &[(&str, i32)]) -> CTCDecoder {
+        let mut token_to_id = HashMap::new();
+        let mut id_to_token = HashMap::new();
+        for (t, id) in tokens {
+            token_to_id.insert(t.to_string(), *id);
+            id_to_token.insert(*id, t.to_string());
+        }
+        let blank_id = token_to_id.get("<blank>").copied().unwrap_or(0);
+        let has_explicit_blank = token_to_id.contains_key("<blank>");
+        CTCDecoder { token_to_id, id_to_token, blank_id, has_explicit_blank }
+    }
+
+    /// 全 blank → 空字符串
+    #[test]
+    fn test_decode_all_blank_returns_empty() {
+        let dec = make_decoder(&[("<blank>", 0), ("你", 1), ("好", 2)]);
+        let logits = Array2::from_shape_vec(
+            (4, 3),
+            vec![1.0f32,0.0,0.0, 1.0,0.0,0.0, 1.0,0.0,0.0, 1.0,0.0,0.0],
+        ).unwrap();
+        assert_eq!(dec.decode(&logits, false), "");
+    }
+
+    /// 0 帧 logits → 空字符串，不 panic
+    #[test]
+    fn test_decode_empty_logits_no_panic() {
+        let dec = make_decoder(&[("<blank>", 0), ("a", 1)]);
+        let logits = Array2::zeros((0, 2));
+        assert_eq!(dec.decode(&logits, false), "");
+    }
+
+    /// 特殊 token（<|zh|> 等）不出现在结果中
+    #[test]
+    fn test_decode_special_tokens_filtered() {
+        // 模拟 SenseVoice 输出中含语言/情感 token
+        let dec = make_decoder(&[
+            ("<blank>", 0),
+            ("<|zh|>", 1),
+            ("<|HAPPY|>", 2),
+            ("你", 3),
+            ("好", 4),
+        ]);
+        // 帧序列：lang_tag, emotion_tag, 你, 好
+        let logits = Array2::from_shape_vec(
+            (4, 5),
+            vec![
+                0.0f32, 1.0, 0.0, 0.0, 0.0, // <|zh|>
+                0.0, 0.0, 1.0, 0.0, 0.0,     // <|HAPPY|>
+                0.0, 0.0, 0.0, 1.0, 0.0,     // 你
+                0.0, 0.0, 0.0, 0.0, 1.0,     // 好
+            ],
+        ).unwrap();
+        let result = dec.decode(&logits, false);
+        assert!(!result.contains("<|"), "特殊 token 不应出现在结果中，got: {:?}", result);
+        assert!(result.contains("你") && result.contains("好"),
+            "正常汉字应出现在结果中，got: {:?}", result);
+    }
+
+    /// 连续相同 token 合并（CTC 规则）
+    #[test]
+    fn test_decode_consecutive_same_token_collapsed() {
+        let dec = make_decoder(&[("<blank>", 0), ("a", 1)]);
+        // a a a blank a → "aa"（三个连续 a 合并为 1，blank 后的 a 是新的）
+        let logits = Array2::from_shape_vec(
+            (5, 2),
+            vec![
+                0.0f32, 1.0, // a
+                0.0, 1.0,    // a
+                0.0, 1.0,    // a
+                1.0, 0.0,    // blank
+                0.0, 1.0,    // a
+            ],
+        ).unwrap();
+        assert_eq!(dec.decode(&logits, false), "aa");
+    }
+
+    /// ▁ 前缀正确转换为空格
+    #[test]
+    fn test_decode_triangle_space_prefix() {
+        let dec = make_decoder(&[
+            ("<blank>", 0),
+            ("▁hello", 1),
+            ("▁world", 2),
+        ]);
+        let logits = Array2::from_shape_vec(
+            (2, 3),
+            vec![0.0f32, 1.0, 0.0, 0.0, 0.0, 1.0],
+        ).unwrap();
+        assert_eq!(dec.decode(&logits, false), "hello world");
+    }
 }

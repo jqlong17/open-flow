@@ -4,14 +4,16 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::info;
 
-mod asr;
-mod audio;
+// 公共模块来自 lib crate（open_flow）
+use open_flow::asr;
+use open_flow::audio;
+use open_flow::common;
+use open_flow::hotkey;
+use open_flow::text_injection;
+use open_flow::tray;
+
 mod cli;
-mod common;
 mod daemon;
-mod hotkey;
-mod text_injection;
-mod tray;
 
 use cli::commands;
 

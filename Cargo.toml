@@ -13,6 +13,10 @@ categories = ["command-line-utilities", "development-tools"]
 name = "open-flow"
 path = "src/main.rs"
 
+[lib]
+name = "open_flow"
+path = "src/lib.rs"
+
 [dependencies]
 # Core
 tokio = { version = "1.35", features = ["full"] }
@@ -59,6 +63,9 @@ uuid = { version = "1.6", features = ["v4"] }
 tempfile = "3.8"
 rand = "0.8"
 libc = "0.2"
+
+[dev-dependencies]
+dirs = "5.0"
 
 [profile.release]
 opt-level = 3
