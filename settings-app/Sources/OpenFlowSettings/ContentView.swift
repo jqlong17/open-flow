@@ -470,20 +470,17 @@ struct ContentView: View {
             Spacer()
 
             if showSaveConfirmation {
-                Label("Saved", systemImage: "checkmark.circle.fill")
+                Label("Saved! Reopen app to apply.", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .font(.callout)
                     .transition(.opacity)
             }
 
-            Button("Save & Apply") {
+            Button("Save") {
                 config.save()
                 withAnimation { showSaveConfirmation = true }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
                     withAnimation { showSaveConfirmation = false }
-                }
-                if config.daemonRunning {
-                    config.restartDaemon()
                 }
             }
             .buttonStyle(.borderedProminent)

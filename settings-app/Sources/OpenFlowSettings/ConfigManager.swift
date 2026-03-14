@@ -201,7 +201,13 @@ class ConfigManager: ObservableObject {
         }
 
         let output = outputLines.joined(separator: "\n") + "\n"
-        try? output.write(to: configPath, atomically: true, encoding: .utf8)
+        do {
+            try output.write(to: configPath, atomically: true, encoding: .utf8)
+        } catch {
+            DispatchQueue.main.async {
+                self.lastError = "Failed to save config: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func parseTOMLLine(_ line: String) -> (String, String)? {
