@@ -129,7 +129,7 @@ impl HotkeyListener {
         let pc = press_count.clone();
         let rc = release_count.clone();
 
-        println!("⌨️  热键监听器已启动（CGEventTap）");
+        println!("⌨️  热键监听器已启动（rdev）");
 
         let result = listen(move |event: Event| {
             match event.event_type {

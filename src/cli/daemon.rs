@@ -153,7 +153,7 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
         pump_run_loop_100ms();
     }
 
-    // ── 在主线程创建托盘（macOS 要求 NSStatusItem 在主线程创建）──────
+    // ── 在主线程创建托盘（macOS 要求 NSStatusItem 在主线程创建；其他平台为 stub）──────
     let (mut tray, tray_handle) = match TrayState::new() {
         Ok((t, h)) => {
             t.set_state(TrayIconState::Idle);
@@ -161,7 +161,7 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
             (Some(t), Some(Arc::new(h)))
         }
         Err(e) => {
-            tracing::warn!("托盘图标创建失败: {:?}，继续运行（无托盘）", e);
+            tracing::warn!("托盘图标创建失败: {}，继续运行（无托盘）", e);
             (None, None)
         }
     };

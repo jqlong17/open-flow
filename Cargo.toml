@@ -33,11 +33,7 @@ cpal = "0.15"
 hound = "3.5"
 ringbuf = "0.3"
 
-# macOS Integration
-core-foundation = "0.9"
-core-graphics = "0.23"
-cocoa = "0.25"
-objc = "0.2"
+# Cross-platform
 rdev = "0.5"
 arboard = "3"
 
@@ -47,11 +43,16 @@ ndarray = "0.17.2"
 rubato = "0.16"
 realfft = "3.4"
 
-# HTTP client (for model download)
-reqwest = { version = "0.12", features = ["stream"] }
+# HTTP client (for model download)，用 rustls 避免 Linux 上依赖系统 OpenSSL
+reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-features = false }
 
-# macOS menu bar tray icon
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS 专用：菜单栏托盘、AppKit 集成
 tray-icon = "0.21"
+core-foundation = "0.9"
+core-graphics = "0.23"
+cocoa = "0.25"
+objc = "0.2"
 
 # Utils
 uuid = { version = "1.6", features = ["v4"] }
