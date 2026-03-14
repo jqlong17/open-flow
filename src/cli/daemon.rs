@@ -2,11 +2,15 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::common::config::Config;
 use crate::daemon::run_daemon;
 use crate::tray::{TrayIconState, TrayState};
+
+/// SIGTERM/SIGINT 收到后设为 true，由主循环检测后正常退出
+static SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 公共路径辅助
@@ -80,7 +84,8 @@ pub fn start_background(model: Option<PathBuf>) -> anyhow::Result<()> {
         .context("启动后台进程失败")?;
 
     let pid = child.id();
-    // 不在此写 PID 文件，由子进程 start_foreground 在就绪后写入
+    // 父进程立即写 PID 文件，stop 命令无需等子进程就绪
+    fs::write(pid_path()?, pid.to_string()).context("写入 PID 文件失败")?;
 
     println!("✅ Open Flow 已在后台启动 (PID: {})", pid);
     println!("   日志: {}", log.display());
@@ -121,11 +126,12 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
         let _ = config.save();
     }
 
-    // ── 写 PID 文件 ───────────────────────────────────────────────────
+    // ── 写 PID 文件（直接调用 --foreground 时写；后台启动时父进程已写）────
     let my_pid = std::process::id();
-    fs::write(pid_path()?, my_pid.to_string())?;
+    let _ = fs::write(pid_path()?, my_pid.to_string());
 
-    // ── 注册信号处理（SIGTERM/SIGINT → 清理 PID 并退出）─────────────
+    // ── 注册信号处理（SIGTERM/SIGINT → 设置 flag，由主循环正常退出）─────
+    // 不在 handler 里调用 process::exit，确保 TrayIcon drop 和 run loop pump 能执行
     #[cfg(unix)]
     unsafe {
         libc::signal(
@@ -139,7 +145,7 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     }
 
     // ── 在主线程创建托盘（macOS 要求 NSStatusItem 在主线程创建）──────
-    let (tray, tray_handle) = match TrayState::new() {
+    let (mut tray, tray_handle) = match TrayState::new() {
         Ok((t, h)) => {
             t.set_state(TrayIconState::Idle);
             tracing::info!("✅ 托盘图标已创建");
@@ -176,9 +182,15 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     // ── 主线程：驱动 macOS NSRunLoop，让托盘 / 菜单事件得以分发 ──────
     run_main_loop(tray.as_ref());
 
+    // ── 退出前移除菜单栏图标：先 drop TrayIcon，再 pump run loop 让 macOS 处理 NSStatusItem 移除
+    drop(tray.take());
+    #[cfg(target_os = "macos")]
+    for _ in 0..10 {
+        pump_run_loop_100ms();
+    }
+
     // ── 退出清理 ──────────────────────────────────────────────────────
     remove_pid_file();
-    // daemon 线程会在 exit_requested 后自行退出，无需 join（进程即将退出）
     let _ = daemon_handle.join();
     println!("\n👋 Open Flow 已停止");
     Ok(())
@@ -200,8 +212,14 @@ fn run_main_loop(tray: Option<&TrayState>) {
         #[cfg(not(target_os = "macos"))]
         std::thread::sleep(std::time::Duration::from_millis(100));
 
+        // 托盘菜单「退出」
         if tray.map_or(false, |t| t.exit_requested()) {
             tracing::info!("用户点击托盘退出");
+            break;
+        }
+        // SIGTERM / SIGINT（open-flow stop 或 Ctrl+C）
+        if SIGNAL_SHUTDOWN.load(Ordering::SeqCst) {
+            tracing::info!("收到信号，正常退出");
             break;
         }
     }
@@ -329,10 +347,10 @@ pub async fn status() -> Result<()> {
 }
 
 /// SIGTERM / SIGINT 信号处理器
+/// 只设置 flag，由主线程的 run_main_loop 检测后走正常退出路径（drop tray → pump run loop）
 #[cfg(unix)]
 extern "C" fn sigterm_handler(_: libc::c_int) {
-    remove_pid_file();
-    std::process::exit(0);
+    SIGNAL_SHUTDOWN.store(true, Ordering::SeqCst);
 }
 
 /// 用 ps 获取进程启动时间（仅用于展示）
