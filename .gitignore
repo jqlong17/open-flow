@@ -15,5 +15,8 @@ testdata/
 # CER 评测数据与结果（本地对比用，不提交 GitHub）
 cer-eval/
 
+# 本地导出模型目录
+export-full-model/
+
 # macOS
 .DS_Store
