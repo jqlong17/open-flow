@@ -1,6 +1,6 @@
 # Open Flow
 
-**中文** | [English](README.en.md)
+**简体** | [繁體](README.zh-TW.md) | [English](README.en.md)
 
 ![Open Flow](assets/open-flow-banner.png)
 
@@ -47,9 +47,35 @@
 
 - 在 Cursor、VS Code、终端、浏览器中用语音代替打字
 - 中英混合，自动标点
-- 转写结果写入剪贴板并自动粘贴，可随时再次粘贴
-- 菜单栏托盘图标（灰/红/黄）
-- 可自定义热键、输出方式、模型与集成
+- 转写结果写入剪贴板并自动粘贴（macOS 可选 CGEvent 模拟打字），可随时再次粘贴
+- 菜单栏托盘图标（灰/红/黄），录音时可选**浮动指示器**（光标旁「录音中…」「转写中…」）
+- 可配置热键（右 Command / Fn / F13）、触发模式（按一次开关 toggle / 按住录 hold）、**简繁转换**（简→繁 / 繁→简）
+- 可选本地 SenseVoice 或 **Groq Whisper** 云端识别；可切换模型预设（quantized / fp16）
+- **macOS**：托盘菜单「偏好设置…」打开 **SwiftUI 设置界面**，图形化管理热键、Provider、模型、权限与日志
+
+### 浮动录音指示器（macOS）
+
+录音时会在光标附近显示药丸形浮层，红色圆点 +「Recording…」表示正在录音，转写时显示「转写中…」，不挡鼠标操作。
+
+![录音时浮动指示器](assets/recording-overlay.png)
+
+---
+
+## 设置界面（macOS）
+
+从托盘菜单点击 **「偏好设置…」** 可打开图形化设置窗口，无需改 config 文件即可管理以下内容。
+
+![Open Flow 设置界面 - 一般](assets/settings-app-general.png)
+
+| 分页 | 功能 |
+|------|------|
+| **一般** | 热键（右 Command / Fn / F13）、触发模式（Toggle / Hold）、简繁转换（无 / 简→繁 / 繁→简）、macOS 权限状态与「打开设置」跳转 |
+| **Provider** | 本地 / Groq 切换、Groq API Key、Whisper 模型与语言、保存并应用 |
+| **模型** | 模型状态、下载/重新下载、路径显示 |
+| **测试** | 实时热键事件监听，验证按键是否被识别 |
+| **日志** | 查看 daemon 最近约 100 行日志 |
+
+窗口顶部显示 **daemon 状态**（运行中 PID、运行时间），并提供 **Start / Stop / Restart / Quit Open Flow** 等控制。权限项会显示是否已授权（绿色勾）或可点击跳转系统设置。修改后点击 **Save** 保存；部分项需重启 daemon 后生效。
 
 ---
 
@@ -84,7 +110,7 @@ open-flow start
 
 切换为高精度：`open-flow model use fp16`（若未下载会先自动拉取）；列出预设：`open-flow model list`。菜单栏灰色圆点即就绪，按右侧 Command 录音，再按一次转写并粘贴。
 
-**或下载 .app**（双击即运行）：[Releases](https://github.com/jqlong17/open-flow/releases) 页面下载 `Open-Flow-<版本>-macos-aarch64.app.zip`，解压后将 **Open Flow.app** 拖入「应用程序」。
+**或下载 .app**（双击即运行）：[Releases](https://github.com/jqlong17/open-flow/releases) 页面下载 `Open-Flow-<版本>-macos-aarch64.app.zip`，解压后将 **Open Flow.app** 拖入「应用程序」。运行后点击菜单栏托盘图标，选择 **「偏好设置…」** 即可打开图形化设置界面（热键、Provider、模型、权限、日志等）。
 
 ### Linux
 
