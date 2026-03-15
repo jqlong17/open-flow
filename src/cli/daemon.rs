@@ -231,25 +231,51 @@ fi
 }
 
 #[cfg(target_os = "macos")]
-fn check_and_start_app_update(current_pid: u32) -> Result<()> {
+enum UpdateDownloadResult {
+    UpToDate { latest_tag: String },
+    ReadyToInstall { zip_path: PathBuf, latest_tag: String },
+}
+
+#[cfg(target_os = "macos")]
+fn check_and_download_app_update() -> Result<UpdateDownloadResult> {
+    let (download_url, latest_tag) = fetch_latest_macos_app_asset()?;
+    let current_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+    if latest_tag == current_tag {
+        return Ok(UpdateDownloadResult::UpToDate { latest_tag });
+    }
+
+    println!("⬇️  检测到新版本 {}，正在下载更新包...", latest_tag);
+    let zip_path = download_latest_app_zip(&download_url, &latest_tag)?;
+    Ok(UpdateDownloadResult::ReadyToInstall {
+        zip_path,
+        latest_tag,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn start_install_downloaded_app_update(zip_path: &Path, current_pid: u32) -> Result<()> {
     let app_bundle = running_app_bundle_path().ok_or_else(|| {
         anyhow::anyhow!(
             "当前不是 .app 内运行。请从 /Applications/Open Flow.app 启动后再使用菜单升级。"
         )
     })?;
 
-    let (download_url, latest_tag) = fetch_latest_macos_app_asset()?;
-    let current_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
-    if latest_tag == current_tag {
-        println!("✅ 已是最新版本（{}）", latest_tag);
-        return Ok(());
-    }
-
-    println!("⬇️  检测到新版本 {}，正在下载更新包...", latest_tag);
-    let zip_path = download_latest_app_zip(&download_url, &latest_tag)?;
-    launch_app_replacement_worker(&app_bundle, &zip_path, current_pid)?;
+    launch_app_replacement_worker(&app_bundle, zip_path, current_pid)?;
     println!("🚀 升级器已启动，Open Flow 即将退出并安装新版本");
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn show_update_popup(message: &str) {
+    let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        "display dialog \"{}\" buttons {{\"好\"}} default button \"好\" with title \"Open Flow 更新\"",
+        escaped
+    );
+    let _ = Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg(script)
+        .spawn();
 }
 
 /// 读 PID 文件，返回 pid（文件不存在或内容非法返回 None）
@@ -548,11 +574,68 @@ fn run_main_loop(
     daemon_alive: &AtomicBool,
     current_pid: u32,
 ) {
+    #[cfg(target_os = "macos")]
+    let mut downloaded_update_zip: Option<PathBuf> = None;
+    #[cfg(target_os = "macos")]
+    let mut update_download_rx: Option<std::sync::mpsc::Receiver<Result<UpdateDownloadResult, String>>> =
+        None;
+
+    if let Some(t) = tray {
+        t.set_update_menu_text("检查更新并升级...");
+        t.set_update_menu_enabled(true);
+    }
+
     loop {
         // 应用 daemon 发来的托盘状态更新（灰/红/黄）
         if let Some(t) = tray {
             t.flush_state_updates();
             t.flush_menu_events();
+        }
+
+        #[cfg(target_os = "macos")]
+        if let Some(rx) = update_download_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(Ok(UpdateDownloadResult::UpToDate { latest_tag })) => {
+                    if let Some(t) = tray {
+                        t.set_update_menu_text("检查更新并升级...");
+                        t.set_update_menu_enabled(true);
+                    }
+                    update_download_rx = None;
+                    show_update_popup(&format!("已是最新版本（{}）", latest_tag));
+                }
+                Ok(Ok(UpdateDownloadResult::ReadyToInstall {
+                    zip_path,
+                    latest_tag,
+                })) => {
+                    downloaded_update_zip = Some(zip_path);
+                    update_download_rx = None;
+                    if let Some(t) = tray {
+                        t.set_update_menu_text("重启以应用更新");
+                        t.set_update_menu_enabled(true);
+                    }
+                    show_update_popup(&format!(
+                        "新版本 {} 安装包已下载，点击“重启以应用更新”开始安装。",
+                        latest_tag
+                    ));
+                }
+                Ok(Err(err_msg)) => {
+                    update_download_rx = None;
+                    if let Some(t) = tray {
+                        t.set_update_menu_text("检查更新并升级...");
+                        t.set_update_menu_enabled(true);
+                    }
+                    show_update_popup(&format!("更新失败：{}", err_msg));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    update_download_rx = None;
+                    if let Some(t) = tray {
+                        t.set_update_menu_text("检查更新并升级...");
+                        t.set_update_menu_enabled(true);
+                    }
+                    show_update_popup("更新任务中断，请重试。");
+                }
+            }
         }
 
         // 应用 overlay 状态更新
@@ -581,9 +664,29 @@ fn run_main_loop(
         // 托盘菜单「检查更新并升级...」（仅 macOS .app）
         if tray.map_or(false, |t| t.update_requested()) {
             #[cfg(target_os = "macos")]
-            match check_and_start_app_update(current_pid) {
-                Ok(_) => break,
-                Err(e) => eprintln!("⚠️  自动升级失败: {}", e),
+            if let Some(zip_path) = downloaded_update_zip.as_ref() {
+                match start_install_downloaded_app_update(zip_path, current_pid) {
+                    Ok(_) => break,
+                    Err(e) => {
+                        eprintln!("⚠️  自动升级失败: {}", e);
+                        show_update_popup(&format!("自动升级失败：{}", e));
+                    }
+                }
+            } else if update_download_rx.is_some() {
+                show_update_popup("正在后台下载更新包，请稍候。");
+            } else {
+                let (tx, rx) = std::sync::mpsc::channel::<Result<UpdateDownloadResult, String>>();
+                update_download_rx = Some(rx);
+
+                if let Some(t) = tray {
+                    t.set_update_menu_text("正在后台下载更新...");
+                    t.set_update_menu_enabled(false);
+                }
+
+                std::thread::spawn(move || {
+                    let result = check_and_download_app_update().map_err(|e| e.to_string());
+                    let _ = tx.send(result);
+                });
             }
         }
 

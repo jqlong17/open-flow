@@ -53,6 +53,7 @@ mod platform {
         icon_recording: Icon,
         icon_transcribing: Icon,
         status_item: MenuItem,
+        update_item: MenuItem,
         pub exit_requested: Arc<AtomicBool>,
         pub prefs_requested: Arc<AtomicBool>,
         pub update_requested: Arc<AtomicBool>,
@@ -106,6 +107,7 @@ mod platform {
                 icon_recording,
                 icon_transcribing,
                 status_item,
+                update_item: update,
                 exit_requested,
                 prefs_requested,
                 update_requested,
@@ -165,6 +167,14 @@ mod platform {
 
         pub fn update_requested(&self) -> bool {
             self.update_requested.swap(false, Ordering::SeqCst)
+        }
+
+        pub fn set_update_menu_text(&self, text: &str) {
+            self.update_item.set_text(text);
+        }
+
+        pub fn set_update_menu_enabled(&self, enabled: bool) {
+            self.update_item.set_enabled(enabled);
         }
 
         pub fn hide_from_menu_bar(&self) {
@@ -247,6 +257,8 @@ mod platform {
         pub fn update_requested(&self) -> bool {
             false
         }
+        pub fn set_update_menu_text(&self, _text: &str) {}
+        pub fn set_update_menu_enabled(&self, _enabled: bool) {}
         pub fn hide_from_menu_bar(&self) {}
     }
 }
