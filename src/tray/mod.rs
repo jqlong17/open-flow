@@ -17,9 +17,9 @@ mod platform {
     use super::TrayIconState;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use tracing::info;
     use tray_icon::menu::{Menu, MenuEvent, MenuItem};
     use tray_icon::{Icon, TrayIconBuilder};
-    use tracing::info;
 
     const ICON_SIZE: u32 = 22;
     const DOT_RADIUS: f32 = 4.0;
@@ -55,6 +55,7 @@ mod platform {
         status_item: MenuItem,
         pub exit_requested: Arc<AtomicBool>,
         pub prefs_requested: Arc<AtomicBool>,
+        pub update_requested: Arc<AtomicBool>,
         state_rx: std::sync::mpsc::Receiver<TrayIconState>,
     }
 
@@ -66,15 +67,27 @@ mod platform {
 
             let exit_requested = Arc::new(AtomicBool::new(false));
             let prefs_requested = Arc::new(AtomicBool::new(false));
+            let update_requested = Arc::new(AtomicBool::new(false));
             let (state_tx, state_rx) = std::sync::mpsc::sync_channel::<TrayIconState>(16);
 
-            let title = MenuItem::with_id("title", format!("Open Flow  v{}", env!("CARGO_PKG_VERSION")), true, None);
+            let title = MenuItem::with_id(
+                "title",
+                format!("Open Flow  v{}", env!("CARGO_PKG_VERSION")),
+                true,
+                None,
+            );
             let status_item = MenuItem::with_id("status", "状态：待机", false, None);
             let prefs = MenuItem::with_id("prefs", "偏好设置...", true, None);
+            let update = MenuItem::with_id("update", "检查更新并升级...", true, None);
             let exit = MenuItem::with_id("exit", "退出", true, None);
 
-            let menu = Menu::with_items(&[&title, &status_item, &prefs, &exit])
-                .map_err(|e| tray_icon::Error::OsError(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            let menu =
+                Menu::with_items(&[&title, &status_item, &prefs, &update, &exit]).map_err(|e| {
+                    tray_icon::Error::OsError(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?;
 
             let tray_icon = TrayIconBuilder::new()
                 .with_menu(Box::new(menu))
@@ -82,10 +95,21 @@ mod platform {
                 .with_icon(icon_idle.clone())
                 .build()?;
 
-            let handle = TrayHandle { state_tx, overlay_state_tx: None, exit_requested: exit_requested.clone() };
+            let handle = TrayHandle {
+                state_tx,
+                overlay_state_tx: None,
+                exit_requested: exit_requested.clone(),
+            };
             let tray_state = Self {
-                tray_icon, icon_idle, icon_recording, icon_transcribing,
-                status_item, exit_requested, prefs_requested, state_rx,
+                tray_icon,
+                icon_idle,
+                icon_recording,
+                icon_transcribing,
+                status_item,
+                exit_requested,
+                prefs_requested,
+                update_requested,
+                state_rx,
             };
             Ok((tray_state, handle))
         }
@@ -108,6 +132,9 @@ mod platform {
                 } else if event.id.as_ref() == "prefs" {
                     info!("用户点击偏好设置菜单");
                     self.prefs_requested.store(true, Ordering::SeqCst);
+                } else if event.id.as_ref() == "update" {
+                    info!("用户点击检查更新菜单");
+                    self.update_requested.store(true, Ordering::SeqCst);
                 } else if event.id.as_ref() == "title" {
                     let _ = std::process::Command::new("open")
                         .arg("https://github.com/jqlong17/open-flow")
@@ -134,6 +161,10 @@ mod platform {
 
         pub fn prefs_requested(&self) -> bool {
             self.prefs_requested.swap(false, Ordering::SeqCst)
+        }
+
+        pub fn update_requested(&self) -> bool {
+            self.update_requested.swap(false, Ordering::SeqCst)
         }
 
         pub fn hide_from_menu_bar(&self) {
@@ -196,8 +227,12 @@ mod platform {
         pub fn new() -> Result<(Self, TrayHandle), std::io::Error> {
             let flag = Arc::new(AtomicBool::new(false));
             Ok((
-                Self { exit_requested: flag.clone() },
-                TrayHandle { exit_requested: flag },
+                Self {
+                    exit_requested: flag.clone(),
+                },
+                TrayHandle {
+                    exit_requested: flag,
+                },
             ))
         }
         pub fn set_state(&self, _state: TrayIconState) {}
@@ -207,6 +242,9 @@ mod platform {
             self.exit_requested.load(Ordering::SeqCst)
         }
         pub fn prefs_requested(&self) -> bool {
+            false
+        }
+        pub fn update_requested(&self) -> bool {
             false
         }
         pub fn hide_from_menu_bar(&self) {}

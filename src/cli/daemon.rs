@@ -1,5 +1,9 @@
 use anyhow::{Context, Result};
 use std::fs;
+#[cfg(target_os = "macos")]
+use std::io::Write;
+#[cfg(target_os = "macos")]
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,6 +18,9 @@ use crate::tray::{TrayIconState, TrayState};
 /// SIGTERM/SIGINT 收到后设为 true，由主循环检测后正常退出
 static SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_os = "macos")]
+const GITHUB_REPO: &str = "jqlong17/open-flow";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 公共路径辅助
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24,6 +31,225 @@ fn pid_path() -> Result<PathBuf> {
 
 fn log_path() -> Result<PathBuf> {
     Ok(Config::data_dir()?.join("daemon.log"))
+}
+
+#[cfg(target_os = "macos")]
+fn running_app_bundle_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.ancestors()
+        .find(|p| p.extension().and_then(|s| s.to_str()) == Some("app"))
+        .map(|p| p.to_path_buf())
+}
+
+#[cfg(target_os = "macos")]
+fn shell_single_quote(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    format!("'{}'", raw.replace('\'', "'\\''"))
+}
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    assets: Vec<GithubAsset>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize)]
+struct GithubAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+#[cfg(target_os = "macos")]
+fn fetch_latest_macos_app_asset() -> Result<(String, String)> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("无法创建更新检查运行时")?;
+
+    let release: GithubRelease = rt.block_on(async {
+        let client = reqwest::Client::builder()
+            .user_agent("open-flow-updater")
+            .build()
+            .context("创建 HTTP 客户端失败")?;
+        let url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .context("请求 latest release 失败")?
+            .error_for_status()
+            .context("latest release 返回错误状态")?;
+        let body = resp
+            .text()
+            .await
+            .context("读取 latest release 响应失败")?;
+        let parsed = serde_json::from_str::<GithubRelease>(&body)
+            .context("解析 latest release JSON 失败")?;
+        Ok::<_, anyhow::Error>(parsed)
+    })?;
+
+    let arch_asset_suffix = if cfg!(target_arch = "aarch64") {
+        "macos-aarch64.app.zip"
+    } else {
+        "macos-x86_64.app.zip"
+    };
+
+    let asset = release
+        .assets
+        .iter()
+        .find(|a| a.name.ends_with(arch_asset_suffix))
+        .or_else(|| release.assets.iter().find(|a| a.name.ends_with(".app.zip")))
+        .ok_or_else(|| anyhow::anyhow!("latest release 未找到 macOS .app.zip 资产"))?;
+
+    Ok((asset.browser_download_url.clone(), release.tag_name))
+}
+
+#[cfg(target_os = "macos")]
+fn download_latest_app_zip(download_url: &str, tag: &str) -> Result<PathBuf> {
+    let update_dir = Config::data_dir()?.join("updates");
+    fs::create_dir_all(&update_dir)?;
+
+    let zip_path = update_dir.join(format!(
+        "open-flow-{}-{}.app.zip",
+        tag.trim_start_matches('v'),
+        uuid::Uuid::new_v4()
+    ));
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("无法创建下载运行时")?;
+
+    rt.block_on(async {
+        let client = reqwest::Client::builder()
+            .user_agent("open-flow-updater")
+            .build()
+            .context("创建下载客户端失败")?;
+        let resp = client
+            .get(download_url)
+            .send()
+            .await
+            .context("下载更新包失败")?
+            .error_for_status()
+            .context("更新包下载返回错误状态")?;
+        let bytes = resp.bytes().await.context("读取更新包失败")?;
+        tokio::fs::write(&zip_path, &bytes)
+            .await
+            .with_context(|| format!("写入更新包失败: {}", zip_path.display()))?;
+        Ok::<_, anyhow::Error>(())
+    })?;
+
+    Ok(zip_path)
+}
+
+#[cfg(target_os = "macos")]
+fn launch_app_replacement_worker(app_bundle: &Path, zip_path: &Path, current_pid: u32) -> Result<()> {
+    let update_dir = Config::data_dir()?.join("updates");
+    fs::create_dir_all(&update_dir)?;
+    let script_path = update_dir.join(format!("open-flow-updater-{}.sh", uuid::Uuid::new_v4()));
+
+    let app_q = shell_single_quote(app_bundle);
+    let zip_q = shell_single_quote(zip_path);
+
+    let script = format!(
+        r#"#!/bin/bash
+set -e
+PID={pid}
+ZIP={zip}
+APP_PATH={app}
+TMP_DIR=$(/usr/bin/mktemp -d)
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+for _ in $(seq 1 60); do
+  if ! /bin/kill -0 "$PID" 2>/dev/null; then
+    break
+  fi
+  /bin/sleep 1
+done
+
+/usr/bin/ditto -x -k "$ZIP" "$TMP_DIR"
+NEW_APP="$TMP_DIR/Open Flow.app"
+if [ ! -d "$NEW_APP" ]; then
+  echo "Update package missing Open Flow.app"
+  exit 1
+fi
+
+install_cmd() {{
+  /bin/rm -rf "$APP_PATH" && /usr/bin/ditto "$NEW_APP" "$APP_PATH"
+}}
+
+if ! install_cmd; then
+  CMD="/bin/rm -rf \"$APP_PATH\" && /usr/bin/ditto \"$NEW_APP\" \"$APP_PATH\""
+  ESCAPED=${{CMD//\\/\\\\}}
+  ESCAPED=${{ESCAPED//\"/\\\"}}
+  /usr/bin/osascript -e "do shell script \"$ESCAPED\" with administrator privileges"
+fi
+
+if [ ! -d "$APP_PATH" ]; then
+  echo "App install failed: $APP_PATH"
+  exit 1
+fi
+
+/usr/bin/open "$APP_PATH"
+"#,
+        pid = current_pid,
+        zip = zip_q,
+        app = app_q,
+    );
+
+    let mut file = fs::File::create(&script_path)
+        .with_context(|| format!("无法创建更新脚本: {}", script_path.display()))?;
+    file.write_all(script.as_bytes())?;
+    drop(file);
+
+    let mut perms = fs::metadata(&script_path)?.permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+    }
+    fs::set_permissions(&script_path, perms)?;
+
+    let updater_log = update_dir.join("updater.log");
+    let updater_log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&updater_log)
+        .with_context(|| format!("无法打开升级日志: {}", updater_log.display()))?;
+
+    Command::new("/bin/bash")
+        .arg(script_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(updater_log_file.try_clone()?))
+        .stderr(Stdio::from(updater_log_file))
+        .spawn()
+        .context("启动升级器失败")?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn check_and_start_app_update(current_pid: u32) -> Result<()> {
+    let app_bundle = running_app_bundle_path().ok_or_else(|| {
+        anyhow::anyhow!(
+            "当前不是 .app 内运行。请从 /Applications/Open Flow.app 启动后再使用菜单升级。"
+        )
+    })?;
+
+    let (download_url, latest_tag) = fetch_latest_macos_app_asset()?;
+    let current_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+    if latest_tag == current_tag {
+        println!("✅ 已是最新版本（{}）", latest_tag);
+        return Ok(());
+    }
+
+    println!("⬇️  检测到新版本 {}，正在下载更新包...", latest_tag);
+    let zip_path = download_latest_app_zip(&download_url, &latest_tag)?;
+    launch_app_replacement_worker(&app_bundle, &zip_path, current_pid)?;
+    println!("🚀 升级器已启动，Open Flow 即将退出并安装新版本");
+    Ok(())
 }
 
 /// 读 PID 文件，返回 pid（文件不存在或内容非法返回 None）
@@ -270,7 +496,14 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     });
 
     // ── 主线程：驱动 macOS NSRunLoop，让托盘 / 菜单事件得以分发 ──────
-    run_main_loop(tray.as_ref(), overlay.as_ref(), &overlay_rx, settings_app_path.as_deref(), &daemon_alive);
+    run_main_loop(
+        tray.as_ref(),
+        overlay.as_ref(),
+        &overlay_rx,
+        settings_app_path.as_deref(),
+        &daemon_alive,
+        my_pid,
+    );
 
     // ── 退出前显式隐藏菜单栏图标并 pump run loop，避免图标残留
     if let Some(ref t) = tray {
@@ -313,6 +546,7 @@ fn run_main_loop(
     overlay_rx: &std::sync::mpsc::Receiver<TrayIconState>,
     settings_app_path: Option<&std::path::Path>,
     daemon_alive: &AtomicBool,
+    current_pid: u32,
 ) {
     loop {
         // 应用 daemon 发来的托盘状态更新（灰/红/黄）
@@ -341,6 +575,15 @@ fn run_main_loop(
                 let _ = std::process::Command::new(path).spawn();
             } else {
                 tracing::warn!("设置应用未找到");
+            }
+        }
+
+        // 托盘菜单「检查更新并升级...」（仅 macOS .app）
+        if tray.map_or(false, |t| t.update_requested()) {
+            #[cfg(target_os = "macos")]
+            match check_and_start_app_update(current_pid) {
+                Ok(_) => break,
+                Err(e) => eprintln!("⚠️  自动升级失败: {}", e),
             }
         }
 
