@@ -107,7 +107,10 @@ fn fetch_latest_macos_app_asset() -> Result<(String, String)> {
 }
 
 #[cfg(target_os = "macos")]
-fn download_latest_app_zip(download_url: &str, tag: &str) -> Result<PathBuf> {
+fn download_latest_app_zip<F>(download_url: &str, tag: &str, mut on_progress: F) -> Result<PathBuf>
+where
+    F: FnMut(u64, Option<u64>),
+{
     let update_dir = Config::data_dir()?.join("updates");
     fs::create_dir_all(&update_dir)?;
 
@@ -123,21 +126,35 @@ fn download_latest_app_zip(download_url: &str, tag: &str) -> Result<PathBuf> {
         .context("无法创建下载运行时")?;
 
     rt.block_on(async {
+        use tokio::io::AsyncWriteExt;
+
         let client = reqwest::Client::builder()
             .user_agent("open-flow-updater")
             .build()
             .context("创建下载客户端失败")?;
-        let resp = client
+        let mut resp = client
             .get(download_url)
             .send()
             .await
             .context("下载更新包失败")?
             .error_for_status()
             .context("更新包下载返回错误状态")?;
-        let bytes = resp.bytes().await.context("读取更新包失败")?;
-        tokio::fs::write(&zip_path, &bytes)
+
+        let total = resp.content_length();
+        let mut file = tokio::fs::File::create(&zip_path)
             .await
-            .with_context(|| format!("写入更新包失败: {}", zip_path.display()))?;
+            .with_context(|| format!("创建更新包文件失败: {}", zip_path.display()))?;
+        let mut downloaded: u64 = 0;
+
+        while let Some(chunk) = resp.chunk().await.context("读取下载分块失败")? {
+            file.write_all(&chunk)
+                .await
+                .with_context(|| format!("写入更新包失败: {}", zip_path.display()))?;
+            downloaded += chunk.len() as u64;
+            on_progress(downloaded, total);
+        }
+
+        file.flush().await.context("刷新更新包文件失败")?;
         Ok::<_, anyhow::Error>(())
     })?;
 
@@ -237,7 +254,16 @@ enum UpdateDownloadResult {
 }
 
 #[cfg(target_os = "macos")]
-fn check_and_download_app_update() -> Result<UpdateDownloadResult> {
+enum UpdateDownloadEvent {
+    Progress { percent: u8 },
+    Completed(Result<UpdateDownloadResult, String>),
+}
+
+#[cfg(target_os = "macos")]
+fn check_and_download_app_update<F>(mut on_progress: F) -> Result<UpdateDownloadResult>
+where
+    F: FnMut(u64, Option<u64>),
+{
     let (download_url, latest_tag) = fetch_latest_macos_app_asset()?;
     let current_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
     if latest_tag == current_tag {
@@ -245,7 +271,9 @@ fn check_and_download_app_update() -> Result<UpdateDownloadResult> {
     }
 
     println!("⬇️  检测到新版本 {}，正在下载更新包...", latest_tag);
-    let zip_path = download_latest_app_zip(&download_url, &latest_tag)?;
+    let zip_path = download_latest_app_zip(&download_url, &latest_tag, |downloaded, total| {
+        on_progress(downloaded, total)
+    })?;
     Ok(UpdateDownloadResult::ReadyToInstall {
         zip_path,
         latest_tag,
@@ -577,11 +605,11 @@ fn run_main_loop(
     #[cfg(target_os = "macos")]
     let mut downloaded_update_zip: Option<PathBuf> = None;
     #[cfg(target_os = "macos")]
-    let mut update_download_rx: Option<std::sync::mpsc::Receiver<Result<UpdateDownloadResult, String>>> =
+    let mut update_download_rx: Option<std::sync::mpsc::Receiver<UpdateDownloadEvent>> =
         None;
 
     if let Some(t) = tray {
-        t.set_update_menu_text("检查更新并升级...");
+        t.set_update_menu_text("检查更新");
         t.set_update_menu_enabled(true);
     }
 
@@ -593,48 +621,70 @@ fn run_main_loop(
         }
 
         #[cfg(target_os = "macos")]
-        if let Some(rx) = update_download_rx.as_ref() {
-            match rx.try_recv() {
-                Ok(Ok(UpdateDownloadResult::UpToDate { latest_tag })) => {
-                    if let Some(t) = tray {
-                        t.set_update_menu_text("检查更新并升级...");
-                        t.set_update_menu_enabled(true);
+        if let Some(rx) = update_download_rx.take() {
+            let mut keep_rx = true;
+
+            loop {
+                match rx.try_recv() {
+                    Ok(UpdateDownloadEvent::Progress { percent }) => {
+                        if let Some(t) = tray {
+                            t.set_update_menu_text(&format!("正在下载更新... {}%", percent));
+                            t.set_update_menu_enabled(false);
+                        }
                     }
-                    update_download_rx = None;
-                    show_update_popup(&format!("已是最新版本（{}）", latest_tag));
-                }
-                Ok(Ok(UpdateDownloadResult::ReadyToInstall {
-                    zip_path,
-                    latest_tag,
-                })) => {
-                    downloaded_update_zip = Some(zip_path);
-                    update_download_rx = None;
-                    if let Some(t) = tray {
-                        t.set_update_menu_text("重启以应用更新");
-                        t.set_update_menu_enabled(true);
+                    Ok(UpdateDownloadEvent::Completed(Ok(UpdateDownloadResult::UpToDate {
+                        latest_tag,
+                    }))) => {
+                        keep_rx = false;
+                        if let Some(t) = tray {
+                            t.set_update_menu_text("检查更新");
+                            t.set_update_menu_enabled(true);
+                        }
+                        show_update_popup(&format!("已是最新版本（{}）", latest_tag));
+                        break;
                     }
-                    show_update_popup(&format!(
-                        "新版本 {} 安装包已下载，点击“重启以应用更新”开始安装。",
-                        latest_tag
-                    ));
-                }
-                Ok(Err(err_msg)) => {
-                    update_download_rx = None;
-                    if let Some(t) = tray {
-                        t.set_update_menu_text("检查更新并升级...");
-                        t.set_update_menu_enabled(true);
+                    Ok(UpdateDownloadEvent::Completed(Ok(UpdateDownloadResult::ReadyToInstall {
+                        zip_path,
+                        latest_tag,
+                    }))) => {
+                        keep_rx = false;
+                        downloaded_update_zip = Some(zip_path);
+                        if let Some(t) = tray {
+                            t.set_update_menu_text("重启以应用更新");
+                            t.set_update_menu_enabled(true);
+                        }
+                        show_update_popup(&format!(
+                            "新版本 {} 安装包已下载，点击“重启以应用更新”开始安装。",
+                            latest_tag
+                        ));
+                        break;
                     }
-                    show_update_popup(&format!("更新失败：{}", err_msg));
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    update_download_rx = None;
-                    if let Some(t) = tray {
-                        t.set_update_menu_text("检查更新并升级...");
-                        t.set_update_menu_enabled(true);
+                    Ok(UpdateDownloadEvent::Completed(Err(err_msg))) => {
+                        keep_rx = false;
+                        if let Some(t) = tray {
+                            t.set_update_menu_text("检查更新");
+                            t.set_update_menu_enabled(true);
+                        }
+                        show_update_popup(&format!("更新失败：{}", err_msg));
+                        break;
                     }
-                    show_update_popup("更新任务中断，请重试。");
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        keep_rx = false;
+                        if let Some(t) = tray {
+                            t.set_update_menu_text("检查更新");
+                            t.set_update_menu_enabled(true);
+                        }
+                        show_update_popup("更新任务中断，请重试。");
+                        break;
+                    }
                 }
+            }
+
+            if keep_rx {
+                update_download_rx = Some(rx);
             }
         }
 
@@ -661,7 +711,7 @@ fn run_main_loop(
             }
         }
 
-        // 托盘菜单「检查更新并升级...」（仅 macOS .app）
+        // 托盘菜单「检查更新」（仅 macOS .app）
         if tray.map_or(false, |t| t.update_requested()) {
             #[cfg(target_os = "macos")]
             if let Some(zip_path) = downloaded_update_zip.as_ref() {
@@ -675,7 +725,7 @@ fn run_main_loop(
             } else if update_download_rx.is_some() {
                 show_update_popup("正在后台下载更新包，请稍候。");
             } else {
-                let (tx, rx) = std::sync::mpsc::channel::<Result<UpdateDownloadResult, String>>();
+                let (tx, rx) = std::sync::mpsc::channel::<UpdateDownloadEvent>();
                 update_download_rx = Some(rx);
 
                 if let Some(t) = tray {
@@ -684,8 +734,20 @@ fn run_main_loop(
                 }
 
                 std::thread::spawn(move || {
-                    let result = check_and_download_app_update().map_err(|e| e.to_string());
-                    let _ = tx.send(result);
+                    let mut last_percent: u8 = 0;
+                    let result = check_and_download_app_update(|downloaded, total| {
+                        if let Some(total_bytes) = total {
+                            if total_bytes > 0 {
+                                let percent = ((downloaded.saturating_mul(100)) / total_bytes).min(100) as u8;
+                                if percent != last_percent {
+                                    last_percent = percent;
+                                    let _ = tx.send(UpdateDownloadEvent::Progress { percent });
+                                }
+                            }
+                        }
+                    })
+                    .map_err(|e| e.to_string());
+                    let _ = tx.send(UpdateDownloadEvent::Completed(result));
                 });
             }
         }

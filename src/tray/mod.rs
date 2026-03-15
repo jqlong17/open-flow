@@ -77,13 +77,13 @@ mod platform {
                 true,
                 None,
             );
+            let update = MenuItem::with_id("update", "检查更新", true, None);
             let status_item = MenuItem::with_id("status", "状态：待机", false, None);
             let prefs = MenuItem::with_id("prefs", "偏好设置...", true, None);
-            let update = MenuItem::with_id("update", "检查更新并升级...", true, None);
             let exit = MenuItem::with_id("exit", "退出", true, None);
 
             let menu =
-                Menu::with_items(&[&title, &status_item, &prefs, &update, &exit]).map_err(|e| {
+                Menu::with_items(&[&title, &update, &status_item, &prefs, &exit]).map_err(|e| {
                     tray_icon::Error::OsError(std::io::Error::new(
                         std::io::ErrorKind::Other,
                         e.to_string(),
