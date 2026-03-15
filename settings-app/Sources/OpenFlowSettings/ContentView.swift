@@ -4,6 +4,7 @@ struct ContentView: View {
     @StateObject private var config = ConfigManager()
     @State private var selectedTab = 0
     @State private var showSaveConfirmation = false
+    @State private var showCopyConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -221,12 +222,83 @@ struct ContentView: View {
                     .pickerStyle(.segmented)
 
                     if config.provider == "local" {
-                        HStack {
-                            Image(systemName: "checkmark.shield.fill")
-                                .foregroundStyle(.green)
-                            Text("All processing is done locally. No data leaves your machine.")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Image(systemName: "checkmark.shield.fill")
+                                    .foregroundStyle(.green)
+                                Text("All processing is done locally. No data leaves your machine.")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Divider()
+
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Local Model")
+                                    .font(.subheadline.weight(.semibold))
+
+                                Picker("Local Model", selection: $config.modelPreset) {
+                                    Text("Quantized (default, smaller)").tag("quantized")
+                                    Text("FP16 (higher accuracy)").tag("fp16")
+                                }
+                                .pickerStyle(.radioGroup)
+                                .disabled(config.modelDownloading)
+
+                                HStack {
+                                    Text("Selected")
+                                    Spacer()
+                                    Text(config.selectedLocalModelLabel)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                HStack {
+                                    Text("Status")
+                                    Spacer()
+                                    if config.modelReady {
+                                        Label("Downloaded", systemImage: "checkmark.circle.fill")
+                                            .foregroundStyle(.green)
+                                    } else if config.modelDownloading {
+                                        Label("Downloading", systemImage: "arrow.down.circle.fill")
+                                            .foregroundStyle(.blue)
+                                    } else {
+                                        Label("Not downloaded", systemImage: "tray.fill")
+                                            .foregroundStyle(.orange)
+                                    }
+                                }
+
+                                HStack {
+                                    Text("Path")
+                                    Spacer()
+                                    Button {
+                                        copyModelPath()
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Text(config.resolvedModelPath)
+                                                .font(.caption)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
+                                            Image(systemName: "doc.on.doc")
+                                                .font(.caption2)
+                                        }
+                                        .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Click to copy path")
+                                }
+
+                                if config.modelDownloading {
+                                    ProgressView(value: config.modelDownloadProgress)
+                                        .progressViewStyle(.linear)
+                                    Text(config.modelDownloadStatus.isEmpty ? "Downloading model..." : config.modelDownloadStatus)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                } else if !config.modelReady {
+                                    Text("Selecting a model preset automatically starts download if it is missing.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                         }
                     }
                 }
@@ -279,6 +351,18 @@ struct ContentView: View {
             }
             .padding(20)
         }
+        .onChange(of: config.provider) { newValue in
+            if newValue == "local" {
+                config.ensureSelectedLocalModelReady()
+            }
+        }
+        .onChange(of: config.modelPreset) { newValue in
+            guard config.provider == "local" else { return }
+            config.selectLocalModelPreset(newValue)
+            if !config.modelReady {
+                config.downloadModel()
+            }
+        }
     }
 
     // MARK: - Model Tab
@@ -300,13 +384,31 @@ struct ContentView: View {
                     }
 
                     HStack {
-                        Text("Path")
+                        Text("Preset")
                         Spacer()
-                        Text(config.resolvedModelPath)
+                        Text(config.selectedLocalModelLabel)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                    }
+
+                    HStack {
+                        Text("Path")
+                        Spacer()
+                        Button {
+                            copyModelPath()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(config.resolvedModelPath)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Image(systemName: "doc.on.doc")
+                                    .font(.caption2)
+                            }
+                            .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Click to copy path")
                     }
 
                     Divider()
@@ -323,9 +425,17 @@ struct ContentView: View {
                         }
                     }
 
-                    Text("Downloads SenseVoice-Small (~230 MB) from Hugging Face")
+                    Text(config.selectedLocalModelDownloadSummary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    if config.modelDownloading {
+                        ProgressView(value: config.modelDownloadProgress)
+                            .progressViewStyle(.linear)
+                        Text(config.modelDownloadStatus.isEmpty ? "Downloading model..." : config.modelDownloadStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 if !config.modelDownloadOutput.isEmpty {
@@ -468,6 +578,13 @@ struct ContentView: View {
                     .transition(.opacity)
             }
 
+            if showCopyConfirmation {
+                Label("Path copied", systemImage: "doc.on.doc.fill")
+                    .foregroundStyle(.blue)
+                    .font(.callout)
+                    .transition(.opacity)
+            }
+
             Button("Save") {
                 config.save()
                 withAnimation { showSaveConfirmation = true }
@@ -481,6 +598,14 @@ struct ContentView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
+    }
+
+    private func copyModelPath() {
+        config.copyModelPathToClipboard()
+        withAnimation { showCopyConfirmation = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            withAnimation { showCopyConfirmation = false }
+        }
     }
 }
 

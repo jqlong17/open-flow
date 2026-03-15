@@ -6,6 +6,7 @@ import AppKit
 class ConfigManager: ObservableObject {
     // Config fields
     @Published var provider: String = "local"
+    @Published var modelPreset: String = "quantized"
     @Published var groqApiKey: String = ""
     @Published var groqModel: String = "whisper-large-v3-turbo"
     @Published var groqLanguage: String = ""
@@ -32,12 +33,19 @@ class ConfigManager: ObservableObject {
     // Model status
     @Published var modelReady = false
     @Published var modelDownloading = false
+    @Published var modelDownloadProgress: Double = 0
+    @Published var modelDownloadStatus: String = ""
     @Published var modelDownloadOutput: String = ""
 
     // Log
     @Published var logContent: String = ""
 
     static let groqModels = ["whisper-large-v3-turbo", "whisper-large-v3"]
+    static let localModelPresets = ["quantized", "fp16"]
+    static let localModelPresetLabels = [
+        "quantized": "Quantized (default, smaller)",
+        "fp16": "FP16 (higher accuracy)"
+    ]
     static let hotkeys = ["right_cmd", "fn", "f13"]
     static let hotkeyLabels = ["Right Command (⌘)", "Fn", "F13"]
     static let triggerModes = ["toggle", "hold"]
@@ -144,6 +152,12 @@ class ConfigManager: ObservableObject {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!)
     }
 
+    func copyModelPathToClipboard() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(resolvedModelPath, forType: .string)
+    }
+
     // MARK: - Config I/O
 
     func load() {
@@ -155,6 +169,7 @@ class ConfigManager: ObservableObject {
 
             switch key {
             case "provider": provider = value
+            case "model_preset": modelPreset = value.isEmpty ? "quantized" : value
             case "groq_api_key": groqApiKey = value
             case "groq_model": groqModel = value
             case "groq_language": groqLanguage = value
@@ -179,12 +194,14 @@ class ConfigManager: ObservableObject {
 
         let ourValues: [(String, String)] = [
             ("provider", provider),
+            ("model_preset", normalizedModelPreset),
             ("groq_api_key", groqApiKey),
             ("groq_model", groqModel),
             ("groq_language", groqLanguage),
             ("hotkey", hotkey),
             ("trigger_mode", triggerMode),
             ("chinese_conversion", chineseConversion),
+            ("model_path", modelPath),
         ]
 
         let ourKeys = Set(ourValues.map { $0.0 })
@@ -552,7 +569,46 @@ class ConfigManager: ObservableObject {
 
     // MARK: - Model Management
 
+    var normalizedModelPreset: String {
+        modelPreset == "fp16" ? "fp16" : "quantized"
+    }
+
+    var selectedLocalModelLabel: String {
+        Self.localModelPresetLabels[normalizedModelPreset] ?? normalizedModelPreset
+    }
+
+    var selectedLocalModelDownloadSummary: String {
+        normalizedModelPreset == "fp16"
+            ? "Downloads SenseVoice FP16 (~450 MB) from Hugging Face"
+            : "Downloads SenseVoice quantized (~230 MB) from Hugging Face"
+    }
+
+    func defaultModelPath(for preset: String) -> String {
+        let subdir = preset == "fp16" ? "sensevoice-small-fp16" : "sensevoice-small"
+        return dataDir.appendingPathComponent("models/\(subdir)").path
+    }
+
+    func selectLocalModelPreset(_ preset: String) {
+        let normalized = preset == "fp16" ? "fp16" : "quantized"
+        modelPreset = normalized
+        modelPath = defaultModelPath(for: normalized)
+        save()
+        checkModelReady()
+    }
+
+    func ensureSelectedLocalModelReady(autoDownload: Bool = true) {
+        guard provider == "local" else { return }
+        selectLocalModelPreset(modelPreset)
+        if autoDownload && !modelReady && !modelDownloading {
+            downloadModel()
+        }
+    }
+
     func checkModelReady() {
+        if modelPath.isEmpty {
+            modelPath = defaultModelPath(for: normalizedModelPreset)
+        }
+
         let path = resolvedModelPath
         if path.isEmpty {
             modelReady = false
@@ -567,12 +623,14 @@ class ConfigManager: ObservableObject {
 
     var resolvedModelPath: String {
         if !modelPath.isEmpty { return modelPath }
-        // Default data dir path
-        return dataDir.appendingPathComponent("models/sensevoice-small").path
+        return defaultModelPath(for: normalizedModelPreset)
     }
 
     func downloadModel() {
+        let preset = normalizedModelPreset
         modelDownloading = true
+        modelDownloadProgress = 0
+        modelDownloadStatus = "Preparing \(preset) model download..."
         modelDownloadOutput = "Starting model download...\n"
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -580,17 +638,20 @@ class ConfigManager: ObservableObject {
             guard let binary = self.findOpenFlowBinary() else {
                 DispatchQueue.main.async {
                     self.modelDownloadOutput += "Error: open-flow binary not found. Please install open-flow first.\n"
+                    self.modelDownloadStatus = "Download unavailable"
                     self.modelDownloading = false
                 }
                 return
             }
             let task = Process()
             task.executableURL = URL(fileURLWithPath: binary)
-            task.arguments = ["setup"]
+            task.arguments = ["model", "use", preset, "--download"]
 
             let pipe = Pipe()
             task.standardOutput = pipe
             task.standardError = pipe
+
+            var outputBuffer = ""
 
             pipe.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
@@ -598,6 +659,8 @@ class ConfigManager: ObservableObject {
                     DispatchQueue.main.async {
                         self.modelDownloadOutput += str
                     }
+                    outputBuffer += str
+                    self.updateModelDownloadProgress(from: outputBuffer)
                 }
             }
 
@@ -606,6 +669,7 @@ class ConfigManager: ObservableObject {
                 task.waitUntilExit()
             } catch {
                 DispatchQueue.main.async {
+                    self.modelDownloadStatus = "Download failed"
                     self.modelDownloadOutput += "\nError: \(error.localizedDescription)\n"
                 }
             }
@@ -614,14 +678,44 @@ class ConfigManager: ObservableObject {
 
             DispatchQueue.main.async {
                 self.modelDownloading = false
+                self.modelDownloadProgress = task.terminationStatus == 0 ? 1.0 : self.modelDownloadProgress
                 self.checkModelReady()
                 if task.terminationStatus == 0 {
+                    self.modelDownloadStatus = "\(preset.uppercased()) model ready"
                     self.modelDownloadOutput += "\nModel download complete!\n"
                 } else {
+                    self.modelDownloadStatus = "Download failed"
                     self.modelDownloadOutput += "\nDownload failed (exit code \(task.terminationStatus))\n"
                 }
             }
         }
+    }
+
+    private func updateModelDownloadProgress(from output: String) {
+        let pattern = #"([0-9]+(?:\.[0-9]+)?) MB / ([0-9]+(?:\.[0-9]+)?) MB\s+\(([0-9]+)%\)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
+        let range = NSRange(output.startIndex..., in: output)
+        guard let match = regex.matches(in: output, range: range).last else { return }
+
+        let current = nsSubstring(output, range: match.range(at: 1))
+        let total = nsSubstring(output, range: match.range(at: 2))
+        let percent = nsSubstring(output, range: match.range(at: 3))
+
+        guard let currentMB = Double(current),
+              let totalMB = Double(total),
+              let percentValue = Double(percent) else {
+            return
+        }
+
+        DispatchQueue.main.async {
+            self.modelDownloadProgress = min(max(percentValue / 100.0, 0), 1)
+            self.modelDownloadStatus = String(format: "Downloading %.1f / %.1f MB (%.0f%%)", currentMB, totalMB, percentValue)
+        }
+    }
+
+    private func nsSubstring(_ source: String, range: NSRange) -> String {
+        guard let swiftRange = Range(range, in: source) else { return "" }
+        return String(source[swiftRange])
     }
 
     // MARK: - Logs
