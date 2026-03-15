@@ -77,7 +77,7 @@ curl -sSL https://raw.githubusercontent.com/jqlong17/open-flow/master/install.sh
 open-flow start
 ```
 
-First run downloads the model from [Hugging Face](https://huggingface.co/haixuantao/SenseVoiceSmall-onnx). Gray dot in menu bar = ready. Right Command to record, again to transcribe and paste.
+First run downloads the quantized model from [Hugging Face](https://huggingface.co/haixuantao/SenseVoiceSmall-onnx); switching to the full preset downloads the non-quantized model from [ruska1117/SenseVoiceSmall-onnx](https://huggingface.co/ruska1117/SenseVoiceSmall-onnx). Gray dot in menu bar = ready. Right Command to record, again to transcribe and paste.
 
 **Or download .app** (double-click to run): [Releases](https://github.com/jqlong17/open-flow/releases) → `Open-Flow-<version>-macos-aarch64.app.zip` → unzip and drag **Open Flow.app** to Applications.
 

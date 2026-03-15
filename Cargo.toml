@@ -1,6 +1,6 @@
 [package]
 name = "open-flow"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 authors = ["Open Flow Contributors"]
 description = "AI coding voice input daemon for macOS - macOS 全局语音输入工具"
@@ -43,8 +43,9 @@ rdev = "0.5"
 arboard = "3"
 tray-icon = "0.21"
 
-# ASR - SenseVoice ONNX integration
-ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
+# ASR - SenseVoice ONNX integration（half 用于 FP16 模型输出解析）
+ort = { version = "2.0.0-rc.12", features = ["ndarray", "half"] }
+half = "2.4"
 ndarray = "0.17.2"
 rubato = "0.16"
 realfft = "3.4"
@@ -67,7 +68,7 @@ cocoa = "0.25"
 objc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_System_Threading", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.52", features = ["Win32_System_Threading", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Console"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux 托盘（tray-icon 用 libappindicator）需主线程跑 glib 事件循环

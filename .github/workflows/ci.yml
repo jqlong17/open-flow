@@ -1,0 +1,38 @@
+# 每次 push dev 或向 master 发 PR 时，在三平台跑 cargo check
+# 目的：提前发现编译错误，避免打 tag 后才发现构建失败
+name: CI
+
+on:
+  push:
+    branches:
+      - dev
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  check-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo check
+        run: cargo check
+
+  check-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo check
+        run: cargo check
+
+  check-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux deps
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libx11-dev libxi-dev libxtst-dev libxdo-dev libglib2.0-dev libappindicator3-dev
+      - name: cargo check
+        run: cargo check
