@@ -22,8 +22,12 @@ pub async fn test_record(duration_secs: u64) -> Result<()> {
                     .unwrap_or(false);
                 println!("{} [{}] {}", if is_default { "*" } else { " " }, idx, name);
                 if let Ok(cfg) = device.default_input_config() {
-                    println!("    采样率: {}Hz, 通道: {}, 格式: {:?}",
-                        cfg.sample_rate().0, cfg.channels(), cfg.sample_format());
+                    println!(
+                        "    采样率: {}Hz, 通道: {}, 格式: {:?}",
+                        cfg.sample_rate().0,
+                        cfg.channels(),
+                        cfg.sample_format()
+                    );
                 }
             }
         }
@@ -44,11 +48,11 @@ pub async fn test_record(duration_secs: u64) -> Result<()> {
     // 准备输出路径
     let temp_dir = std::env::temp_dir();
     let output_path = temp_dir.join("open-flow-test-recording.wav");
-    
+
     println!("🔴 准备开始录音 {} 秒...", duration_secs);
     println!("   请准备好说话");
     println!();
-    
+
     // 倒计时 3 秒
     for i in (1..=3).rev() {
         print!("\r   开始录音倒计时: {}...", i);
@@ -56,25 +60,23 @@ pub async fn test_record(duration_secs: u64) -> Result<()> {
         std::thread::sleep(Duration::from_secs(1));
     }
     println!("\r   开始！                    ");
-    
+
     // 直接录制到文件
-    match audio_capture.record_to_file(
-        Duration::from_secs(duration_secs),
-        &output_path,
-    ) {
+    match audio_capture.record_to_file(Duration::from_secs(duration_secs), &output_path) {
         Ok(_) => {
             println!();
             println!("✅ 测试完成！");
             println!("   录音文件: {:?}", output_path);
-            
+
             // 检查文件
             if output_path.exists() {
                 let metadata = std::fs::metadata(&output_path)?;
-                println!("   文件大小: {} bytes ({:.2} MB)", 
+                println!(
+                    "   文件大小: {} bytes ({:.2} MB)",
                     metadata.len(),
                     metadata.len() as f64 / 1024.0 / 1024.0
                 );
-                
+
                 // 显示播放命令
                 println!();
                 println!("📢 播放录音:");
@@ -87,6 +89,6 @@ pub async fn test_record(duration_secs: u64) -> Result<()> {
             return Err(e);
         }
     }
-    
+
     Ok(())
 }

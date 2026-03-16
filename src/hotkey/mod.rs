@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::sync::atomic::{Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{mpsc::Sender, Arc};
 use std::thread;
 use tracing::{error, info, warn};
@@ -60,11 +60,7 @@ impl HotkeyListener {
         let pc = press_count.clone();
         let rc = release_count.clone();
 
-        let key_name = if is_fn_key {
-            "Fn"
-        } else {
-            "右侧 Command"
-        };
+        let key_name = if is_fn_key { "Fn" } else { "右侧 Command" };
         println!("⌨️  热键监听器已启动（CGEventTap，热键: {}）", key_name);
 
         let current = CFRunLoop::get_current();
@@ -87,22 +83,18 @@ impl HotkeyListener {
                         let was = pressed_clone.swap(true, Ordering::SeqCst);
                         if !was {
                             let n = pc.fetch_add(1, Ordering::SeqCst) + 1;
-                            info!(
-                                "[Hotkey] 事件 #press={} 按下（Fn）",
-                                n
-                            );
+                            println!("[Hotkey] raw_event press={} key=fn", n);
                             if let Err(e) = sender.send(HotkeyEvent::Pressed) {
+                                eprintln!("[Hotkey] send_failed key=fn event=Pressed error={}", e);
                                 error!("发送热键事件失败: {}", e);
                             }
                         }
                     } else if pressed_clone.load(Ordering::SeqCst) {
                         pressed_clone.store(false, Ordering::SeqCst);
                         let n = rc.fetch_add(1, Ordering::SeqCst) + 1;
-                        info!(
-                            "[Hotkey] 事件 #release={} 松开（Fn）",
-                            n
-                        );
+                        println!("[Hotkey] raw_event release={} key=fn", n);
                         if let Err(e) = sender.send(HotkeyEvent::Released) {
+                            eprintln!("[Hotkey] send_failed key=fn event=Released error={}", e);
                             error!("发送热键事件失败: {}", e);
                         }
                     }
@@ -118,11 +110,15 @@ impl HotkeyListener {
                         let was = pressed_clone.swap(true, Ordering::SeqCst);
                         if !was {
                             let n = pc.fetch_add(1, Ordering::SeqCst) + 1;
-                            info!(
-                                "[Hotkey] 事件 #press={} 按下（右侧 Command）was_pressed={} -> 发送",
+                            println!(
+                                "[Hotkey] raw_event press={} key=right_cmd was_pressed={}",
                                 n, was
                             );
                             if let Err(e) = sender.send(HotkeyEvent::Pressed) {
+                                eprintln!(
+                                    "[Hotkey] send_failed key=right_cmd event=Pressed error={}",
+                                    e
+                                );
                                 error!("发送热键事件失败: {}", e);
                             }
                         }
@@ -130,11 +126,15 @@ impl HotkeyListener {
                         let was = pressed_clone.swap(false, Ordering::SeqCst);
                         if was {
                             let n = rc.fetch_add(1, Ordering::SeqCst) + 1;
-                            info!(
-                                "[Hotkey] 事件 #release={} 松开（右侧 Command）was_pressed={}",
+                            println!(
+                                "[Hotkey] raw_event release={} key=right_cmd was_pressed={}",
                                 n, was
                             );
                             if let Err(e) = sender.send(HotkeyEvent::Released) {
+                                eprintln!(
+                                    "[Hotkey] send_failed key=right_cmd event=Released error={}",
+                                    e
+                                );
                                 error!("发送热键事件失败: {}", e);
                             }
                         }
@@ -173,36 +173,36 @@ impl HotkeyListener {
         println!("⌨️  热键监听器已启动（rdev）");
 
         // Windows / Linux: 右侧 Alt（AltGr）；与 macOS 右 Command 区分
-        let result = listen(move |event: Event| {
-            match event.event_type {
-                EventType::KeyPress(Key::MetaRight) => {
-                    let was = pressed_clone.swap(true, Ordering::SeqCst);
-                    if !was {
-                        let n = pc.fetch_add(1, Ordering::SeqCst) + 1;
-                        info!(
-                            "[Hotkey] 事件 #press={} 按下",
-                            n
+        let result = listen(move |event: Event| match event.event_type {
+            EventType::KeyPress(Key::MetaRight) => {
+                let was = pressed_clone.swap(true, Ordering::SeqCst);
+                if !was {
+                    let n = pc.fetch_add(1, Ordering::SeqCst) + 1;
+                    println!("[Hotkey] raw_event press={} key=meta_right", n);
+                    if let Err(e) = sender.send(HotkeyEvent::Pressed) {
+                        eprintln!(
+                            "[Hotkey] send_failed key=meta_right event=Pressed error={}",
+                            e
                         );
-                        if let Err(e) = sender.send(HotkeyEvent::Pressed) {
-                            error!("发送热键事件失败: {}", e);
-                        }
+                        error!("发送热键事件失败: {}", e);
                     }
                 }
-                EventType::KeyRelease(Key::MetaRight) => {
-                    let was = pressed_clone.swap(false, Ordering::SeqCst);
-                    if was {
-                        let n = rc.fetch_add(1, Ordering::SeqCst) + 1;
-                        info!(
-                            "[Hotkey] 事件 #release={} 松开",
-                            n
-                        );
-                        if let Err(e) = sender.send(HotkeyEvent::Released) {
-                            error!("发送热键事件失败: {}", e);
-                        }
-                    }
-                }
-                _ => {}
             }
+            EventType::KeyRelease(Key::MetaRight) => {
+                let was = pressed_clone.swap(false, Ordering::SeqCst);
+                if was {
+                    let n = rc.fetch_add(1, Ordering::SeqCst) + 1;
+                    println!("[Hotkey] raw_event release={} key=meta_right", n);
+                    if let Err(e) = sender.send(HotkeyEvent::Released) {
+                        eprintln!(
+                            "[Hotkey] send_failed key=meta_right event=Released error={}",
+                            e
+                        );
+                        error!("发送热键事件失败: {}", e);
+                    }
+                }
+            }
+            _ => {}
         });
 
         if let Err(e) = result {
@@ -222,12 +222,14 @@ pub fn check_accessibility_permission() -> bool {
     #[cfg(target_os = "macos")]
     {
         use core_foundation::base::TCFType;
+        use core_foundation::boolean::CFBoolean;
         use core_foundation::dictionary::CFDictionary;
         use core_foundation::string::CFString;
-        use core_foundation::boolean::CFBoolean;
 
         extern "C" {
-            fn AXIsProcessTrustedWithOptions(options: core_foundation::dictionary::CFDictionaryRef) -> bool;
+            fn AXIsProcessTrustedWithOptions(
+                options: core_foundation::dictionary::CFDictionaryRef,
+            ) -> bool;
         }
         // kAXTrustedCheckOptionPrompt = "AXTrustedCheckOptionPrompt"
         let key = CFString::new("AXTrustedCheckOptionPrompt");
@@ -321,8 +323,8 @@ pub fn request_microphone_permission() {
 pub fn check_microphone_permission() -> bool {
     #[cfg(target_os = "macos")]
     {
-        use objc::{class, msg_send, sel, sel_impl};
         use objc::runtime::Object;
+        use objc::{class, msg_send, sel, sel_impl};
 
         // 链接 AVFoundation 框架（仅需声明，不需要 extern fn）
         #[link(name = "AVFoundation", kind = "framework")]

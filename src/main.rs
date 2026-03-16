@@ -229,7 +229,11 @@ async fn async_main(cmd: Commands) -> anyhow::Result<()> {
         Commands::Status => {
             cli::daemon::status().await?;
         }
-        Commands::Transcribe { file, duration, model } => {
+        Commands::Transcribe {
+            file,
+            duration,
+            model,
+        } => {
             commands::transcribe::run(file, duration, model).await?;
         }
         Commands::TestRecord { duration } => {
@@ -251,7 +255,9 @@ async fn async_main(cmd: Commands) -> anyhow::Result<()> {
         }
         Commands::Model { command } => match command {
             ModelCommand::Use { preset, download } => {
-                let p = preset.parse().map_err(|e: String| anyhow::anyhow!("{}", e))?;
+                let p = preset
+                    .parse()
+                    .map_err(|e: String| anyhow::anyhow!("{}", e))?;
                 commands::model::use_preset(p, download).await?;
             }
             ModelCommand::List => {

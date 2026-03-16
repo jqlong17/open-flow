@@ -6,7 +6,8 @@ use tokio::io::AsyncWriteExt;
 use crate::common::config::ModelPreset;
 
 /// 量化版：Hugging Face haixuantao/SenseVoiceSmall-onnx
-const MODEL_BASE_QUANTIZED: &str = "https://huggingface.co/haixuantao/SenseVoiceSmall-onnx/resolve/main";
+const MODEL_BASE_QUANTIZED: &str =
+    "https://huggingface.co/haixuantao/SenseVoiceSmall-onnx/resolve/main";
 
 /// 量化版需要下载的文件：(远端文件名, 本地保存名, 预期大小描述)
 const MODEL_FILES_QUANTIZED: &[(&str, &str, &str)] = &[
@@ -17,7 +18,8 @@ const MODEL_FILES_QUANTIZED: &[(&str, &str, &str)] = &[
 ];
 
 /// FP16 版：Hugging Face ruska1117/SenseVoiceSmall-onnx-fp16（半精度，约 450MB）
-const MODEL_BASE_FP16: &str = "https://huggingface.co/ruska1117/SenseVoiceSmall-onnx-fp16/resolve/main";
+const MODEL_BASE_FP16: &str =
+    "https://huggingface.co/ruska1117/SenseVoiceSmall-onnx-fp16/resolve/main";
 
 /// FP16 版需要下载的文件
 const MODEL_FILES_FP16: &[(&str, &str, &str)] = &[
@@ -85,7 +87,10 @@ pub async fn ensure_model_ready(model_override: Option<PathBuf>) -> Result<PathB
     }
 
     // 4. 按预设自动下载
-    println!("🔍 未找到本地模型（预设: {}），正在自动下载...", preset.as_str());
+    println!(
+        "🔍 未找到本地模型（预设: {}），正在自动下载...",
+        preset.as_str()
+    );
     println!();
     download_all(None, preset, false).await?;
     save_model_to_config(&default_dir)?;
@@ -121,7 +126,11 @@ pub async fn run(model_dir: Option<PathBuf>, force: bool) -> Result<()> {
 }
 
 /// 执行实际下载流程（按预设选择源与文件列表）；供 model use 等调用
-pub async fn download_all(model_dir: Option<PathBuf>, preset: ModelPreset, force: bool) -> Result<()> {
+pub async fn download_all(
+    model_dir: Option<PathBuf>,
+    preset: ModelPreset,
+    force: bool,
+) -> Result<()> {
     let dest_dir = match model_dir {
         Some(p) => p,
         None => default_model_dir(preset)?,

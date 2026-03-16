@@ -98,13 +98,7 @@ mod platform {
                 false,
             );
             y -= row_height;
-            Self::add_label(
-                content,
-                "Restart daemon after changes.",
-                label_x,
-                y,
-                false,
-            );
+            Self::add_label(content, "Restart daemon after changes.", label_x, y, false);
             y -= row_height + 16.0;
 
             // Current settings display
@@ -113,9 +107,14 @@ mod platform {
 
             // These will be updated in reload_values, but show placeholders
             let tag_base = 100i64;
-            for (i, label) in ["Provider: ...", "Hotkey: ...", "Trigger: ...", "Groq Model: ..."]
-                .iter()
-                .enumerate()
+            for (i, label) in [
+                "Provider: ...",
+                "Hotkey: ...",
+                "Trigger: ...",
+                "Groq Model: ...",
+            ]
+            .iter()
+            .enumerate()
             {
                 let lbl = Self::create_label(content, label, label_x + 10.0, y);
                 let _: () = msg_send![lbl, setTag: tag_base + i as i64];
@@ -138,18 +137,12 @@ mod platform {
         unsafe fn add_label(parent: *mut Object, text: &str, x: f64, y: f64, bold: bool) {
             let lbl = Self::create_label(parent, text, x, y);
             if bold {
-                let font: *mut Object =
-                    msg_send![class!(NSFont), boldSystemFontOfSize: 13.0f64];
+                let font: *mut Object = msg_send![class!(NSFont), boldSystemFontOfSize: 13.0f64];
                 let _: () = msg_send![lbl, setFont: font];
             }
         }
 
-        unsafe fn create_label(
-            parent: *mut Object,
-            text: &str,
-            x: f64,
-            y: f64,
-        ) -> *mut Object {
+        unsafe fn create_label(parent: *mut Object, text: &str, x: f64, y: f64) -> *mut Object {
             let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(360.0, 20.0));
             let label: *mut Object = msg_send![class!(NSTextField), alloc];
             let label: *mut Object = msg_send![label, initWithFrame: frame];

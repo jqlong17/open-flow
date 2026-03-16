@@ -40,11 +40,7 @@ fn transform_string(text: &str, reverse: bool) -> String {
     let transform = CFString::new("Simplified-Traditional");
 
     unsafe {
-        let mutable = CFStringCreateMutableCopy(
-            std::ptr::null(),
-            0,
-            cf_text.as_concrete_TypeRef(),
-        );
+        let mutable = CFStringCreateMutableCopy(std::ptr::null(), 0, cf_text.as_concrete_TypeRef());
         if mutable.is_null() {
             return text.to_string();
         }
@@ -58,7 +54,8 @@ fn transform_string(text: &str, reverse: bool) -> String {
 
         if ok {
             // Read back the transformed string
-            let cf_result = CFString::wrap_under_create_rule(mutable as core_foundation::string::CFStringRef);
+            let cf_result =
+                CFString::wrap_under_create_rule(mutable as core_foundation::string::CFStringRef);
             cf_result.to_string()
         } else {
             // Transform failed, return original

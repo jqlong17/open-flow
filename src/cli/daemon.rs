@@ -73,7 +73,10 @@ fn fetch_latest_macos_app_asset() -> Result<(String, String)> {
             .user_agent("open-flow-updater")
             .build()
             .context("创建 HTTP 客户端失败")?;
-        let url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
+        let url = format!(
+            "https://api.github.com/repos/{}/releases/latest",
+            GITHUB_REPO
+        );
         let resp = client
             .get(url)
             .send()
@@ -81,10 +84,7 @@ fn fetch_latest_macos_app_asset() -> Result<(String, String)> {
             .context("请求 latest release 失败")?
             .error_for_status()
             .context("latest release 返回错误状态")?;
-        let body = resp
-            .text()
-            .await
-            .context("读取 latest release 响应失败")?;
+        let body = resp.text().await.context("读取 latest release 响应失败")?;
         let parsed = serde_json::from_str::<GithubRelease>(&body)
             .context("解析 latest release JSON 失败")?;
         Ok::<_, anyhow::Error>(parsed)
@@ -162,7 +162,11 @@ where
 }
 
 #[cfg(target_os = "macos")]
-fn launch_app_replacement_worker(app_bundle: &Path, zip_path: &Path, current_pid: u32) -> Result<()> {
+fn launch_app_replacement_worker(
+    app_bundle: &Path,
+    zip_path: &Path,
+    current_pid: u32,
+) -> Result<()> {
     let update_dir = Config::data_dir()?.join("updates");
     fs::create_dir_all(&update_dir)?;
     let script_path = update_dir.join(format!("open-flow-updater-{}.sh", uuid::Uuid::new_v4()));
@@ -249,8 +253,13 @@ fi
 
 #[cfg(target_os = "macos")]
 enum UpdateDownloadResult {
-    UpToDate { latest_tag: String },
-    ReadyToInstall { zip_path: PathBuf, latest_tag: String },
+    UpToDate {
+        latest_tag: String,
+    },
+    ReadyToInstall {
+        zip_path: PathBuf,
+        latest_tag: String,
+    },
 }
 
 #[cfg(target_os = "macos")]
@@ -506,7 +515,11 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     let provider: Arc<dyn AsrProvider> = match config.provider.as_str() {
         "groq" => {
             let api_key = config.resolved_groq_api_key();
-            match GroqAsrProvider::new(api_key, config.groq_model.clone(), config.groq_language.clone()) {
+            match GroqAsrProvider::new(
+                api_key,
+                config.groq_model.clone(),
+                config.groq_language.clone(),
+            ) {
                 Ok(p) => {
                     println!("   Provider: Groq ({})", config.groq_model);
                     Arc::new(p)
@@ -605,8 +618,7 @@ fn run_main_loop(
     #[cfg(target_os = "macos")]
     let mut downloaded_update_zip: Option<PathBuf> = None;
     #[cfg(target_os = "macos")]
-    let mut update_download_rx: Option<std::sync::mpsc::Receiver<UpdateDownloadEvent>> =
-        None;
+    let mut update_download_rx: Option<std::sync::mpsc::Receiver<UpdateDownloadEvent>> = None;
 
     if let Some(t) = tray {
         t.set_update_menu_text("检查更新");
@@ -643,10 +655,12 @@ fn run_main_loop(
                         show_update_popup(&format!("已是最新版本（{}）", latest_tag));
                         break;
                     }
-                    Ok(UpdateDownloadEvent::Completed(Ok(UpdateDownloadResult::ReadyToInstall {
-                        zip_path,
-                        latest_tag,
-                    }))) => {
+                    Ok(UpdateDownloadEvent::Completed(Ok(
+                        UpdateDownloadResult::ReadyToInstall {
+                            zip_path,
+                            latest_tag,
+                        },
+                    ))) => {
                         keep_rx = false;
                         downloaded_update_zip = Some(zip_path);
                         if let Some(t) = tray {
@@ -738,7 +752,8 @@ fn run_main_loop(
                     let result = check_and_download_app_update(|downloaded, total| {
                         if let Some(total_bytes) = total {
                             if total_bytes > 0 {
-                                let percent = ((downloaded.saturating_mul(100)) / total_bytes).min(100) as u8;
+                                let percent =
+                                    ((downloaded.saturating_mul(100)) / total_bytes).min(100) as u8;
                                 if percent != last_percent {
                                     last_percent = percent;
                                     let _ = tx.send(UpdateDownloadEvent::Progress { percent });
@@ -780,7 +795,9 @@ fn pump_glib_linux() {
 /// Windows：Ctrl+C/Ctrl+Break 控制台处理例程；返回 1(TRUE) 表示已处理，阻止系统默认终止进程。
 #[cfg(windows)]
 unsafe extern "system" fn win32_ctrl_handler(dw_ctrl_type: u32) -> i32 {
-    if dw_ctrl_type == 0 /* CTRL_C_EVENT */ || dw_ctrl_type == 1 /* CTRL_BREAK_EVENT */ {
+    if dw_ctrl_type == 0 /* CTRL_C_EVENT */ || dw_ctrl_type == 1
+    /* CTRL_BREAK_EVENT */
+    {
         SIGNAL_SHUTDOWN.store(true, Ordering::SeqCst);
         1i32 // TRUE：已处理，不要调用下一个 handler 或 ExitProcess
     } else {
@@ -812,8 +829,8 @@ fn pump_win32_messages() {
 /// 必须走 NSApplication 的事件队列才能响应 NSStatusItem 点击和菜单。
 #[cfg(target_os = "macos")]
 fn prepare_appkit() {
-    use objc::{class, msg_send, sel, sel_impl};
     use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
 
     unsafe {
         let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
@@ -829,8 +846,8 @@ fn prepare_appkit() {
 
 #[cfg(target_os = "macos")]
 fn pump_run_loop_100ms() {
-    use objc::{class, msg_send, sel, sel_impl};
     use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
 
     unsafe {
         let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
@@ -846,8 +863,7 @@ fn pump_run_loop_100ms() {
         ];
 
         // 第一次调用最多等 100ms；之后排空剩余事件（distantPast = 不阻塞）
-        let deadline: *mut Object =
-            msg_send![date_cls, dateWithTimeIntervalSinceNow: 0.1f64];
+        let deadline: *mut Object = msg_send![date_cls, dateWithTimeIntervalSinceNow: 0.1f64];
         let past: *mut Object = msg_send![date_cls, distantPast];
 
         let mut first = true;
@@ -912,7 +928,9 @@ pub async fn stop() -> Result<()> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-        use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+        };
         let h = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
         if h != 0 && h != -1_i32 as isize {
             unsafe {

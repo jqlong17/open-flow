@@ -6,7 +6,8 @@ use tracing::info;
 
 use crate::asr::AsrProvider;
 use crate::audio::AudioCapture;
-use crate::common::types::{HotkeyEvent, RecordingState};
+use crate::common::memory;
+use crate::common::types::{HotkeyEvent, RecordingState, TranscriptionResult};
 use crate::hotkey::{
     check_accessibility_permission, request_accessibility_permission, HotkeyListener,
 };
@@ -28,6 +29,9 @@ pub struct Daemon {
     is_processing: AtomicBool,
     /// 已收到的热键事件次数（用于日志：第 N 次按键）
     hotkey_recv_count: std::sync::atomic::AtomicU64,
+    recording_session_count: std::sync::atomic::AtomicU64,
+    transcription_count: std::sync::atomic::AtomicU64,
+    recording_warning_issued: AtomicBool,
     audio_capture: AudioCapture,
     provider: Arc<dyn AsrProvider>,
     text_injector: TextInjector,
@@ -41,11 +45,13 @@ pub struct Daemon {
     trigger_mode: String,
 }
 
+const MAX_RECORDING_DURATION_SECS: u64 = 2 * 60 * 60;
+const RECORDING_WARNING_DURATION_SECS: u64 = MAX_RECORDING_DURATION_SECS - 5 * 60;
+const TRANSCRIBE_SEGMENT_SECS: u64 = 60;
+const TRANSCRIBE_TIMEOUT_SECS: u64 = 120;
+
 impl Daemon {
-    pub fn new(
-        provider: Arc<dyn AsrProvider>,
-        tray: Option<Arc<TrayHandle>>,
-    ) -> Result<Self> {
+    pub fn new(provider: Arc<dyn AsrProvider>, tray: Option<Arc<TrayHandle>>) -> Result<Self> {
         let audio_capture = AudioCapture::new().context("初始化音频采集器失败")?;
         let text_injector = TextInjector::new();
         let config = crate::common::config::Config::load().unwrap_or_default();
@@ -54,6 +60,9 @@ impl Daemon {
             state: Arc::new(Mutex::new(RecordingState::default())),
             is_processing: AtomicBool::new(false),
             hotkey_recv_count: std::sync::atomic::AtomicU64::new(0),
+            recording_session_count: std::sync::atomic::AtomicU64::new(0),
+            transcription_count: std::sync::atomic::AtomicU64::new(0),
+            recording_warning_issued: AtomicBool::new(false),
             audio_capture,
             provider,
             text_injector,
@@ -65,6 +74,15 @@ impl Daemon {
     }
 
     pub async fn run(self) -> Result<()> {
+        self.log_memory_checkpoint("daemon_start", None);
+
+        let mut tray_poll = tokio::time::interval(std::time::Duration::from_millis(200));
+        let mut memory_heartbeat = tokio::time::interval(std::time::Duration::from_secs(60));
+        tray_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        memory_heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tray_poll.tick().await;
+        memory_heartbeat.tick().await;
+
         let current_exe = std::env::current_exe()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|e| format!("<unavailable: {e}>"));
@@ -187,14 +205,49 @@ impl Daemon {
                     }
                 }
                         // daemon 每 200ms 检查托盘退出标志
-                _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                _ = tray_poll.tick() => {
                     if self.tray.as_ref().map_or(false, |t| t.exit_requested()) {
                         println!("👋 托盘退出信号已收到，daemon 即将停止...");
                         break;
                     }
+
+                    let recording_elapsed = {
+                        let state = self.state.lock().unwrap();
+                        if state.is_recording {
+                            state.start_time.map(|t| t.elapsed())
+                        } else {
+                            None
+                        }
+                    };
+
+                    if let Some(elapsed) = recording_elapsed {
+                        if elapsed.as_secs() >= MAX_RECORDING_DURATION_SECS {
+                            eprintln!(
+                                "⚠️  录音已达到最大时长（2 小时），已自动停止并开始转写。"
+                            );
+                            self.set_tray(TrayIconState::Transcribing);
+                            if let Err(e) = self.stop_and_transcribe(&event_tx).await {
+                                self.set_tray(TrayIconState::Idle);
+                                eprintln!("⚠️  转写失败: {e}");
+                            }
+                        } else if elapsed.as_secs() >= RECORDING_WARNING_DURATION_SECS
+                            && !self.recording_warning_issued.swap(true, Ordering::SeqCst)
+                        {
+                            let remain = MAX_RECORDING_DURATION_SECS.saturating_sub(elapsed.as_secs());
+                            eprintln!(
+                                "⚠️  录音时长接近上限，还可继续录制约 {} 秒。",
+                                remain
+                            );
+                        }
+                    }
+                }
+                _ = memory_heartbeat.tick() => {
+                    self.log_memory_checkpoint("heartbeat", None);
                 }
             }
         }
+
+        self.log_memory_checkpoint("daemon_stop", None);
 
         Ok(())
     }
@@ -233,7 +286,10 @@ impl Daemon {
                 } else {
                     // Toggle 模式: Pressed 切换状态
                     if is_recording {
-                        info!("[Hotkey] 第 {} 次 -> 动作: 停止录音并转写（toggle 模式）", n);
+                        info!(
+                            "[Hotkey] 第 {} 次 -> 动作: 停止录音并转写（toggle 模式）",
+                            n
+                        );
                         self.set_tray(TrayIconState::Transcribing);
                         if let Err(e) = self.stop_and_transcribe(tx).await {
                             self.set_tray(TrayIconState::Idle);
@@ -265,30 +321,61 @@ impl Daemon {
     }
 
     fn start_recording(&self) -> Result<()> {
-        let mut state = self.state.lock().unwrap();
-        if state.is_recording {
-            return Ok(());
+        self.log_memory_checkpoint("before_start_recording", None);
+
+        {
+            let state = self.state.lock().unwrap();
+            if state.is_recording {
+                println!("[Daemon] start_recording skipped already_recording=true");
+                return Ok(());
+            }
         }
 
-        // 每次录音创建全新 Arc，旧 stream 的 stale 回调只写入旧 Arc，不影响本次 session
+        println!("[Daemon] start_recording state_checked");
+
         let session_buf: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        println!("[Daemon] start_recording session_buffer_created");
+
         let stream = self
             .audio_capture
             .build_live_stream(session_buf.clone())
             .context("创建录音流失败")?;
-        *self.recording_buffer.lock().unwrap() = session_buf;
-        *self.active_stream.lock().unwrap() = Some(stream);
+        println!("[Daemon] start_recording build_live_stream_returned");
 
-        state.is_recording = true;
-        state.start_time = Some(std::time::Instant::now());
+        *self.recording_buffer.lock().unwrap() = session_buf;
+        println!("[Daemon] start_recording recording_buffer_stored");
+
+        *self.active_stream.lock().unwrap() = Some(stream);
+        println!("[Daemon] start_recording active_stream_stored");
+
+        {
+            let mut state = self.state.lock().unwrap();
+            state.is_recording = true;
+            state.start_time = Some(std::time::Instant::now());
+        }
+        self.recording_warning_issued.store(false, Ordering::SeqCst);
+        println!("[Daemon] start_recording state_updated");
+
+        let session_id = self.recording_session_count.fetch_add(1, Ordering::SeqCst) + 1;
+        println!(
+            "[Daemon] start_recording session_id_assigned={}",
+            session_id
+        );
 
         info!("[Hotkey] 录音已启动");
+        self.log_memory_checkpoint(
+            "after_start_recording",
+            Some(format!("session_id={} session_buffer_len=0", session_id)),
+        );
+        println!("[Daemon] start_recording after_checkpoint");
         println!("🔴 录音中... 再按热键停止");
         Ok(())
     }
 
     async fn stop_and_transcribe(&self, tx: &mpsc::Sender<DaemonEvent>) -> Result<()> {
         self.is_processing.store(true, Ordering::SeqCst);
+        self.recording_warning_issued.store(false, Ordering::SeqCst);
+        self.log_memory_checkpoint("before_stop_and_transcribe", None);
 
         let duration = {
             let mut state = self.state.lock().unwrap();
@@ -296,10 +383,7 @@ impl Daemon {
                 return Ok(());
             }
             state.is_recording = false;
-            state
-                .start_time
-                .map(|t| t.elapsed())
-                .unwrap_or_default()
+            state.start_time.map(|t| t.elapsed()).unwrap_or_default()
         };
 
         // 先拿走本次 session 的 Arc，再 drop stream
@@ -307,11 +391,27 @@ impl Daemon {
         let session_buf = self.recording_buffer.lock().unwrap().clone();
         drop(self.active_stream.lock().unwrap().take());
 
-        let buffer: Vec<f32> = session_buf.lock().unwrap().clone();
+        let (buffer, session_buffer_len, session_buffer_capacity) = {
+            let mut guard = session_buf.lock().unwrap();
+            let len = guard.len();
+            let capacity = guard.capacity();
+            let moved = std::mem::take(&mut *guard);
+            (moved, len, capacity)
+        };
         info!(
             "[Hotkey] 录音已停止，开始转写 (时长 {:.1}s, {} 样本)",
             duration.as_secs_f32(),
             buffer.len()
+        );
+        self.log_memory_checkpoint(
+            "after_recording_buffer_clone",
+            Some(format!(
+                "duration_ms={} sample_count={} session_buffer_len={} session_buffer_capacity={}",
+                duration.as_millis(),
+                buffer.len(),
+                session_buffer_len,
+                session_buffer_capacity,
+            )),
         );
         println!(
             "⏹️  录音停止 ({:.1}s / {} 样本)，正在转写...",
@@ -332,7 +432,9 @@ impl Daemon {
         if max_amp < 0.001 {
             self.is_processing.store(false, Ordering::SeqCst);
             eprintln!("⚠️  录音振幅极低（max={:.6}），麦克风可能未授权。", max_amp);
-            eprintln!("   请前往：系统设置 > 隐私与安全性 > 麦克风，将 Open Flow.app 添加到列表并启用。");
+            eprintln!(
+                "   请前往：系统设置 > 隐私与安全性 > 麦克风，将 Open Flow.app 添加到列表并启用。"
+            );
             eprintln!("   然后完全退出并重新打开 Open Flow。");
             return Ok(());
         }
@@ -340,30 +442,179 @@ impl Daemon {
         // 通过 AsrProvider trait 进行转写（本地或云端）
         let sample_rate = self.audio_capture.get_info().sample_rate;
         let provider = self.provider.clone();
+        let transcribe_started_at = std::time::Instant::now();
 
-        let result = match tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            provider.transcribe(&buffer, sample_rate),
-        )
-        .await
+        let result = match self
+            .transcribe_with_segments(provider, &buffer, sample_rate)
+            .await
         {
-            Ok(Ok(r)) => r,
-            Ok(Err(e)) => {
+            Ok(r) => r,
+            Err(e) => {
                 self.is_processing.store(false, Ordering::SeqCst);
                 return Err(e);
             }
-            Err(_elapsed) => {
-                self.is_processing.store(false, Ordering::SeqCst);
-                eprintln!("⚠️  转写超时（>30s），已放弃，请检查模型或重启 daemon");
-                return Ok(());
-            }
         };
+
+        let transcription_id = self.transcription_count.fetch_add(1, Ordering::SeqCst) + 1;
+        self.log_memory_checkpoint(
+            "after_transcribe",
+            Some(format!(
+                "transcription_id={} duration_ms={} sample_count={} text_chars={} provider_duration_ms={}",
+                transcription_id,
+                transcribe_started_at.elapsed().as_millis(),
+                buffer.len(),
+                result.text.chars().count(),
+                result.duration_ms,
+            )),
+        );
 
         tx.send(DaemonEvent::TranscriptionComplete(result.text))
             .await
             .ok();
 
         Ok(())
+    }
+
+    async fn transcribe_with_segments(
+        &self,
+        provider: Arc<dyn AsrProvider>,
+        audio: &[f32],
+        sample_rate: u32,
+    ) -> Result<TranscriptionResult> {
+        let chunk_samples = (sample_rate as usize)
+            .saturating_mul(TRANSCRIBE_SEGMENT_SECS as usize)
+            .max(1);
+
+        if audio.len() <= chunk_samples {
+            return match tokio::time::timeout(
+                std::time::Duration::from_secs(TRANSCRIBE_TIMEOUT_SECS),
+                provider.transcribe(audio, sample_rate),
+            )
+            .await
+            {
+                Ok(Ok(r)) => Ok(r),
+                Ok(Err(e)) => Err(e),
+                Err(_elapsed) => {
+                    anyhow::bail!(
+                        "转写超时（>{}s），请检查模型状态或缩短录音",
+                        TRANSCRIBE_TIMEOUT_SECS
+                    )
+                }
+            };
+        }
+
+        let total_segments = (audio.len() + chunk_samples - 1) / chunk_samples;
+        println!(
+            "📦 检测到长录音，启用分段转写：{} 段（每段 {} 秒）",
+            total_segments, TRANSCRIBE_SEGMENT_SECS
+        );
+
+        let started_at = std::time::Instant::now();
+        let mut merged_texts: Vec<String> = Vec::with_capacity(total_segments);
+        let mut confidence_sum = 0.0f32;
+        let mut confidence_count: u32 = 0;
+        let mut language: Option<String> = None;
+
+        for (idx, chunk) in audio.chunks(chunk_samples).enumerate() {
+            let segment_no = idx + 1;
+            println!(
+                "🧩 分段转写 {}/{}（{} 样本）",
+                segment_no,
+                total_segments,
+                chunk.len()
+            );
+
+            let segment = match tokio::time::timeout(
+                std::time::Duration::from_secs(TRANSCRIBE_TIMEOUT_SECS),
+                provider.transcribe(chunk, sample_rate),
+            )
+            .await
+            {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    return Err(e)
+                        .context(format!("第 {}/{} 段转写失败", segment_no, total_segments));
+                }
+                Err(_elapsed) => {
+                    anyhow::bail!(
+                        "第 {}/{} 段转写超时（>{}s）",
+                        segment_no,
+                        total_segments,
+                        TRANSCRIBE_TIMEOUT_SECS
+                    );
+                }
+            };
+
+            let trimmed = segment.text.trim();
+            if !trimmed.is_empty() {
+                merged_texts.push(trimmed.to_string());
+            }
+
+            confidence_sum += segment.confidence;
+            confidence_count += 1;
+
+            if language.is_none() {
+                language = segment.language.clone();
+            }
+        }
+
+        Ok(TranscriptionResult {
+            text: merged_texts.join(" "),
+            confidence: if confidence_count > 0 {
+                confidence_sum / confidence_count as f32
+            } else {
+                0.0
+            },
+            language,
+            duration_ms: started_at.elapsed().as_millis() as u64,
+        })
+    }
+
+    fn log_memory_checkpoint(&self, checkpoint: &str, extra: Option<String>) {
+        let state = self.state.lock().unwrap();
+        let buffer_info = {
+            let buffer_arc = self.recording_buffer.lock().unwrap().clone();
+            let buffer = buffer_arc.lock().unwrap();
+            (buffer.len(), buffer.capacity())
+        };
+        let active_stream = self.active_stream.lock().unwrap().is_some();
+        let sessions = self.recording_session_count.load(Ordering::SeqCst);
+        let transcriptions = self.transcription_count.load(Ordering::SeqCst);
+
+        let suffix = extra
+            .as_ref()
+            .map(|v| format!(" {}", v))
+            .unwrap_or_default();
+
+        if let Some(snapshot) = memory::sample_process_memory() {
+            println!(
+                "[Mem] checkpoint={} rss={} vsz={} recording={} processing={} active_stream={} buffer_len={} buffer_cap={} sessions={} transcriptions={}{}",
+                checkpoint,
+                memory::format_bytes(snapshot.rss_bytes),
+                memory::format_bytes(snapshot.vsz_bytes),
+                state.is_recording,
+                self.is_processing.load(Ordering::SeqCst),
+                active_stream,
+                buffer_info.0,
+                buffer_info.1,
+                sessions,
+                transcriptions,
+                suffix,
+            );
+        } else {
+            println!(
+                "[Mem] checkpoint={} rss=<unavailable> vsz=<unavailable> recording={} processing={} active_stream={} buffer_len={} buffer_cap={} sessions={} transcriptions={}{}",
+                checkpoint,
+                state.is_recording,
+                self.is_processing.load(Ordering::SeqCst),
+                active_stream,
+                buffer_info.0,
+                buffer_info.1,
+                sessions,
+                transcriptions,
+                suffix,
+            );
+        }
     }
 }
 

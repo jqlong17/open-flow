@@ -5,6 +5,7 @@ use hound::{WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{error, info};
@@ -222,11 +223,14 @@ impl AudioCapture {
 
     /// 创建并启动一个实时录音流，音频数据写入共享缓冲区。
     /// 调用者负责 drop 返回的 Stream 来停止录音。
-    pub fn build_live_stream(
-        &self,
-        buffer: Arc<Mutex<Vec<f32>>>,
-    ) -> Result<cpal::Stream> {
+    pub fn build_live_stream(&self, buffer: Arc<Mutex<Vec<f32>>>) -> Result<cpal::Stream> {
+        println!(
+            "[Audio] build_live_stream begin sample_format={:?} sample_rate={} channels={}",
+            self.sample_format, self.sample_rate, self.channels
+        );
+
         let err_fn = |err: cpal::StreamError| {
+            eprintln!("[Audio] stream_error error={}", err);
             error!("❌ 音频采集错误: {}", err);
         };
 
@@ -234,10 +238,16 @@ impl AudioCapture {
 
         let stream = match self.sample_format {
             SampleFormat::F32 => {
+                println!("[Audio] build_input_stream format=f32");
                 let buf = buffer.clone();
+                let callback_logged = Arc::new(AtomicBool::new(false));
+                let callback_logged_clone = callback_logged.clone();
                 self.device.build_input_stream(
                     &self.config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        if !callback_logged_clone.swap(true, Ordering::SeqCst) {
+                            println!("[Audio] first_callback format=f32 frames={}", data.len());
+                        }
                         if let Ok(mut b) = buf.lock() {
                             if channels > 1 {
                                 for chunk in data.chunks(channels) {
@@ -253,14 +263,22 @@ impl AudioCapture {
                 )?
             }
             SampleFormat::I16 => {
+                println!("[Audio] build_input_stream format=i16");
                 let buf = buffer.clone();
+                let callback_logged = Arc::new(AtomicBool::new(false));
+                let callback_logged_clone = callback_logged.clone();
                 self.device.build_input_stream(
                     &self.config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                        if !callback_logged_clone.swap(true, Ordering::SeqCst) {
+                            println!("[Audio] first_callback format=i16 frames={}", data.len());
+                        }
                         if let Ok(mut b) = buf.lock() {
                             if channels > 1 {
                                 for chunk in data.chunks(channels) {
-                                    let mixed = chunk.iter().map(|&s| s as f32 / 32768.0).sum::<f32>() / channels as f32;
+                                    let mixed =
+                                        chunk.iter().map(|&s| s as f32 / 32768.0).sum::<f32>()
+                                            / channels as f32;
                                     b.push(mixed);
                                 }
                             } else {
@@ -273,14 +291,24 @@ impl AudioCapture {
                 )?
             }
             SampleFormat::U16 => {
+                println!("[Audio] build_input_stream format=u16");
                 let buf = buffer.clone();
+                let callback_logged = Arc::new(AtomicBool::new(false));
+                let callback_logged_clone = callback_logged.clone();
                 self.device.build_input_stream(
                     &self.config,
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                        if !callback_logged_clone.swap(true, Ordering::SeqCst) {
+                            println!("[Audio] first_callback format=u16 frames={}", data.len());
+                        }
                         if let Ok(mut b) = buf.lock() {
                             if channels > 1 {
                                 for chunk in data.chunks(channels) {
-                                    let mixed = chunk.iter().map(|&s| (s as f32 - 32768.0) / 32768.0).sum::<f32>() / channels as f32;
+                                    let mixed = chunk
+                                        .iter()
+                                        .map(|&s| (s as f32 - 32768.0) / 32768.0)
+                                        .sum::<f32>()
+                                        / channels as f32;
                                     b.push(mixed);
                                 }
                             } else {
@@ -295,7 +323,10 @@ impl AudioCapture {
             _ => anyhow::bail!("不支持的采样格式: {:?}", self.sample_format),
         };
 
+        println!("[Audio] build_input_stream success");
+        println!("[Audio] stream_play begin");
         stream.play().context("启动音频流失败")?;
+        println!("[Audio] stream_play success");
         Ok(stream)
     }
 

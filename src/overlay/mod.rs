@@ -32,10 +32,8 @@ mod platform {
     impl OverlayWindow {
         pub fn new() -> Option<Self> {
             unsafe {
-                let frame = NSRect::new(
-                    NSPoint::new(0.0, 0.0),
-                    NSSize::new(PILL_WIDTH, PILL_HEIGHT),
-                );
+                let frame =
+                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(PILL_WIDTH, PILL_HEIGHT));
 
                 let style_mask: u64 = 0; // NSWindowStyleMaskBorderless
                 let panel: *mut Object = msg_send![class!(NSPanel), alloc];
@@ -70,8 +68,7 @@ mod platform {
                 // Create a visual effect view for blur
                 let effect_view: *mut Object = msg_send![class!(NSVisualEffectView), alloc];
                 let content_frame: NSRect = msg_send![content_view, bounds];
-                let effect_view: *mut Object =
-                    msg_send![effect_view, initWithFrame: content_frame];
+                let effect_view: *mut Object = msg_send![effect_view, initWithFrame: content_frame];
                 let _: () = msg_send![effect_view, setMaterial: 13i64]; // HUDWindow
                 let _: () = msg_send![effect_view, setBlendingMode: 0i64]; // behindWindow
                 let _: () = msg_send![effect_view, setState: 1i64]; // active
@@ -147,8 +144,7 @@ mod platform {
                 match state {
                     TrayIconState::Idle => {
                         if self.visible.swap(false, Ordering::SeqCst) {
-                            let _: () =
-                                msg_send![self.panel, orderOut: std::ptr::null::<Object>()];
+                            let _: () = msg_send![self.panel, orderOut: std::ptr::null::<Object>()];
                         }
                     }
                     TrayIconState::Recording => {
@@ -215,10 +211,7 @@ mod platform {
             // Find the screen containing the cursor
             let screens: *mut Object = msg_send![class!(NSScreen), screens];
             let screen_count: u64 = msg_send![screens, count];
-            let mut target_frame = NSRect::new(
-                NSPoint::new(0.0, 0.0),
-                NSSize::new(1920.0, 1080.0),
-            );
+            let mut target_frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1920.0, 1080.0));
 
             for i in 0..screen_count {
                 let screen: *mut Object = msg_send![screens, objectAtIndex: i];

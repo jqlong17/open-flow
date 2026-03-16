@@ -29,8 +29,14 @@ pub async fn run_test_hotkey(
     println!("⌨️  热键自动化测试（模拟热键：Windows/Linux 右侧 Alt，macOS 右 Command）");
     println!("   请先在另一终端运行: RUST_LOG=info open-flow start");
     println!();
-    println!("   参数: {} 轮, 每轮录音约 {}s, 转写等待 {}s", cycles, record_secs, transcribe_wait_secs);
-    println!("   启动后等待 {}s 再开始模拟（给 daemon 就绪时间）", ready_wait_secs);
+    println!(
+        "   参数: {} 轮, 每轮录音约 {}s, 转写等待 {}s",
+        cycles, record_secs, transcribe_wait_secs
+    );
+    println!(
+        "   启动后等待 {}s 再开始模拟（给 daemon 就绪时间）",
+        ready_wait_secs
+    );
     println!();
 
     std::thread::sleep(Duration::from_secs(ready_wait_secs));
@@ -41,15 +47,24 @@ pub async fn run_test_hotkey(
         simulate_hotkey()?;
         std::thread::sleep(Duration::from_secs(record_secs));
 
-        println!("[TestHotkey] 轮次 {} — 模拟按键: 停止并转写 (已录音 ~{}s)", i, record_secs);
+        println!(
+            "[TestHotkey] 轮次 {} — 模拟按键: 停止并转写 (已录音 ~{}s)",
+            i, record_secs
+        );
         simulate_hotkey()?;
         std::thread::sleep(Duration::from_secs(transcribe_wait_secs));
 
         let elapsed = t0.elapsed().as_secs();
-        println!("[TestHotkey] 轮次 {} 结束 (本轮耗时 {}s)，下一轮...", i, elapsed);
+        println!(
+            "[TestHotkey] 轮次 {} 结束 (本轮耗时 {}s)，下一轮...",
+            i, elapsed
+        );
         println!();
     }
 
-    println!("[TestHotkey] 全部 {} 轮完成。请查看 open-flow start 终端的 [Hotkey] 日志核对行为。", cycles);
+    println!(
+        "[TestHotkey] 全部 {} 轮完成。请查看 open-flow start 终端的 [Hotkey] 日志核对行为。",
+        cycles
+    );
     Ok(())
 }

@@ -134,7 +134,11 @@ impl Config {
             }
         }
 
-        if config.model_path.as_ref().map_or(false, |p| p.as_os_str().is_empty()) {
+        if config
+            .model_path
+            .as_ref()
+            .map_or(false, |p| p.as_os_str().is_empty())
+        {
             config.model_path = None;
         }
 

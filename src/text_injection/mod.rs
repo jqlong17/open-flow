@@ -144,7 +144,9 @@ impl TextInjector {
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     async fn type_text(_text: &str) -> Result<()> {
-        tracing::warn!("当前平台不支持自动粘贴，转写结果已写入剪贴板，请手动粘贴（Ctrl+V / Cmd+V）。");
+        tracing::warn!(
+            "当前平台不支持自动粘贴，转写结果已写入剪贴板，请手动粘贴（Ctrl+V / Cmd+V）。"
+        );
         Ok(())
     }
 }

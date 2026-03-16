@@ -75,7 +75,10 @@ impl AudioPreprocessor {
         };
 
         // 2. Dither：FunASR WavFrontend 默认 dither=0.0（关闭），设 OPEN_FLOW_DITHER=1 可开启
-        let dithered = if std::env::var("OPEN_FLOW_DITHER").map(|v| v == "1").unwrap_or(false) {
+        let dithered = if std::env::var("OPEN_FLOW_DITHER")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        {
             add_dither(&resampled, 1.0)
         } else {
             resampled
@@ -306,14 +309,12 @@ fn create_mel_filterbank(
         let right = bin_points[i + 2].min(n_freqs);
         for j in left..center {
             if center > left {
-                filterbank[[i, j]] =
-                    (j as f32 - left as f32) / (center as f32 - left as f32);
+                filterbank[[i, j]] = (j as f32 - left as f32) / (center as f32 - left as f32);
             }
         }
         for j in center..right {
             if right > center {
-                filterbank[[i, j]] =
-                    (right as f32 - j as f32) / (right as f32 - center as f32);
+                filterbank[[i, j]] = (right as f32 - j as f32) / (right as f32 - center as f32);
             }
         }
     }
@@ -352,7 +353,9 @@ fn apply_lfr(features: &Array2<f32>, m: usize, n: usize) -> anyhow::Result<Array
     let t = features.nrows();
     let feat_dim = features.ncols();
 
-    let use_left_pad = std::env::var("OPEN_FLOW_LFR_LEFT_PAD").map(|v| v != "0").unwrap_or(true);
+    let use_left_pad = std::env::var("OPEN_FLOW_LFR_LEFT_PAD")
+        .map(|v| v != "0")
+        .unwrap_or(true);
     let left_pad = if use_left_pad { (m - 1) / 2 } else { 0 };
     let t_eff = t + left_pad;
     let t_lfr = (t_eff + n - 1) / n;
@@ -385,8 +388,7 @@ mod tests {
 
     #[test]
     fn test_mel_filterbank() {
-        let filterbank =
-            create_mel_filterbank(16000, 400, 80, 20.0, 7600.0);
+        let filterbank = create_mel_filterbank(16000, 400, 80, 20.0, 7600.0);
         assert_eq!(filterbank.nrows(), 80);
         assert_eq!(filterbank.ncols(), 201);
     }
@@ -408,12 +410,19 @@ mod tests {
         let from_rate = 48000u32;
         let to_rate = TARGET_SAMPLE_RATE; // 16000
         let n_input = 48000usize; // 1秒
-        let audio: Vec<f32> = (0..n_input).map(|i| (i as f32 / n_input as f32).sin()).collect();
+        let audio: Vec<f32> = (0..n_input)
+            .map(|i| (i as f32 / n_input as f32).sin())
+            .collect();
 
         let output = resample_audio(&audio, from_rate, to_rate).unwrap();
         let expected = (n_input as f64 * to_rate as f64 / from_rate as f64).round() as usize;
-        assert_eq!(output.len(), expected,
-            "重采样后样本数应为 {}，got {}", expected, output.len());
+        assert_eq!(
+            output.len(),
+            expected,
+            "重采样后样本数应为 {}，got {}",
+            expected,
+            output.len()
+        );
     }
 
     /// 重采样 48kHz 2.6s → 16kHz，样本数在合理范围
@@ -426,8 +435,11 @@ mod tests {
 
         let output = resample_audio(&audio, from_rate, to_rate).unwrap();
         // 期望 ~42325 样本（2.64s * 16000）
-        assert!(output.len() > 40000 && output.len() < 45000,
-            "16kHz 重采样结果应在 40000~45000 范围，got {}", output.len());
+        assert!(
+            output.len() > 40000 && output.len() < 45000,
+            "16kHz 重采样结果应在 40000~45000 范围，got {}",
+            output.len()
+        );
     }
 
     /// 空音频重采样不 panic，返回空
@@ -445,12 +457,17 @@ mod tests {
         let audio: Vec<f32> = vec![0.0; duration_samples];
 
         let frame_size = (FRAME_LENGTH_MS / 1000.0 * TARGET_SAMPLE_RATE as f32) as usize; // 400
-        let hop = (FRAME_SHIFT_MS / 1000.0 * TARGET_SAMPLE_RATE as f32) as usize;         // 160
+        let hop = (FRAME_SHIFT_MS / 1000.0 * TARGET_SAMPLE_RATE as f32) as usize; // 160
 
         let frames = frame_audio(&audio, frame_size, hop).unwrap();
         let expected = (duration_samples - frame_size) / hop + 1;
-        assert_eq!(frames.nrows(), expected,
-            "分帧数应为 {}，got {}", expected, frames.nrows());
+        assert_eq!(
+            frames.nrows(),
+            expected,
+            "分帧数应为 {}，got {}",
+            expected,
+            frames.nrows()
+        );
     }
 
     /// LFR 输出帧数 < 输入帧数（n=6 下采样）
@@ -464,10 +481,20 @@ mod tests {
         // 输出帧数 ≈ t/n（含左填充）
         let left_pad = (LFR_M - 1) / 2;
         let expected = (t + left_pad + LFR_N - 1) / LFR_N;
-        assert_eq!(lfr.nrows(), expected,
-            "LFR 输出帧数应为 {}，got {}", expected, lfr.nrows());
-        assert_eq!(lfr.ncols(), N_MELS * LFR_M,
-            "LFR 特征维度应为 {}，got {}", N_MELS * LFR_M, lfr.ncols());
+        assert_eq!(
+            lfr.nrows(),
+            expected,
+            "LFR 输出帧数应为 {}，got {}",
+            expected,
+            lfr.nrows()
+        );
+        assert_eq!(
+            lfr.ncols(),
+            N_MELS * LFR_M,
+            "LFR 特征维度应为 {}，got {}",
+            N_MELS * LFR_M,
+            lfr.ncols()
+        );
         assert!(lfr.nrows() < t, "LFR 应减少帧数");
     }
 
@@ -485,8 +512,10 @@ mod tests {
         // 维度不匹配
         let bad_shift = vec![0.0f32; 100];
         let bad_scale = vec![1.0f32; 100];
-        assert!(apply_cmvn(&mut features, &bad_shift, &bad_scale).is_err(),
-            "CMVN 维度不匹配应返回 Err");
+        assert!(
+            apply_cmvn(&mut features, &bad_shift, &bad_scale).is_err(),
+            "CMVN 维度不匹配应返回 Err"
+        );
     }
 
     /// 全零样本经过预处理管线不 panic
@@ -496,7 +525,11 @@ mod tests {
         // 3秒全零 16kHz（模拟静音）
         let silent = vec![0.0f32; TARGET_SAMPLE_RATE as usize * 3];
         let result = pre.process(&silent, TARGET_SAMPLE_RATE);
-        assert!(result.is_ok(), "全零样本预处理不应 panic，got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "全零样本预处理不应 panic，got: {:?}",
+            result.err()
+        );
     }
 
     /// 48kHz 音频输入自动重采样到 16kHz
@@ -509,7 +542,11 @@ mod tests {
             .map(|i| (2.0 * PI * 440.0 * i as f32 / 48000.0).sin() * 0.1)
             .collect();
         let result = pre.process(&audio, 48000);
-        assert!(result.is_ok(), "48kHz 音频预处理不应失败，got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "48kHz 音频预处理不应失败，got: {:?}",
+            result.err()
+        );
         let features = result.unwrap();
         // 特征维度应为 N_MELS * LFR_M = 560
         assert_eq!(features.ncols(), N_MELS * LFR_M);

@@ -70,7 +70,10 @@ impl AsrProvider for GroqAsrProvider {
             return Err(anyhow!("Groq transcription failed: {} {}", status, body));
         }
 
-        let body = res.text().await.context("Failed to read Groq response body")?;
+        let body = res
+            .text()
+            .await
+            .context("Failed to read Groq response body")?;
         let parsed: GroqTranscriptionResponse =
             serde_json::from_str(&body).context("Failed to parse Groq response JSON")?;
 

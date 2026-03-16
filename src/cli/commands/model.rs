@@ -1,8 +1,8 @@
 //! 模型预设切换：quantized（默认）| fp16
 
-use anyhow::Result;
-use crate::common::config::{Config, ModelPreset};
 use crate::cli::commands::setup;
+use crate::common::config::{Config, ModelPreset};
+use anyhow::Result;
 
 /// 切换到指定预设并可选触发下载
 pub async fn use_preset(preset: ModelPreset, download: bool) -> Result<()> {
@@ -32,7 +32,11 @@ pub async fn use_preset(preset: ModelPreset, download: bool) -> Result<()> {
 pub fn list() -> Result<()> {
     let config = Config::load().unwrap_or_default();
     let current = config.effective_preset();
-    let path = config.model_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(默认目录)".to_string());
+    let path = config
+        .model_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "(默认目录)".to_string());
 
     println!("当前模型预设: {}", current.as_str());
     println!("   model_path: {}", path);

@@ -17,10 +17,7 @@ fn is_special_token(s: &str) -> bool {
 }
 
 fn postprocess_tokens(tokens: Vec<String>) -> String {
-    let s = tokens
-        .join("")
-        .replace('▁', " ")
-        .replace("<space>", " ");
+    let s = tokens.join("").replace('▁', " ").replace("<space>", " ");
     s.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -122,15 +119,32 @@ impl CTCDecoder {
                     .iter()
                     .take(k)
                     .map(|(id, p)| {
-                        let t = self.id_to_token.get(&(*id as i32)).cloned().unwrap_or_else(|| "?".to_string());
+                        let t = self
+                            .id_to_token
+                            .get(&(*id as i32))
+                            .cloned()
+                            .unwrap_or_else(|| "?".to_string());
                         format!("{}:{:.2}", t, p)
                     })
                     .collect();
-                tracing::info!("[DEBUG] logits frame {} top-{}: {}", frame_idx, k, top.join(", "));
+                tracing::info!(
+                    "[DEBUG] logits frame {} top-{}: {}",
+                    frame_idx,
+                    k,
+                    top.join(", ")
+                );
             }
-            let blank = if self.has_explicit_blank { self.blank_id } else { 0 };
+            let blank = if self.has_explicit_blank {
+                self.blank_id
+            } else {
+                0
+            };
             let non_blank: usize = frame_ids.iter().filter(|&&id| id != blank).count();
-            tracing::info!("[DEBUG] non_blank frames: {} / {}", non_blank, frame_ids.len());
+            tracing::info!(
+                "[DEBUG] non_blank frames: {} / {}",
+                non_blank,
+                frame_ids.len()
+            );
         }
 
         let blank_id_use = if self.has_explicit_blank {
@@ -141,7 +155,9 @@ impl CTCDecoder {
 
         // 当 blank(含<unk>) 过强时可选用每帧“最佳非 blank”以得到非空结果；设 OPEN_FLOW_BEST_NON_BLANK=0 恢复纯 argmax
         // 纯 CTC argmax；设 OPEN_FLOW_BEST_NON_BLANK=1 可开启调试模式
-        let use_best_non_blank = std::env::var("OPEN_FLOW_BEST_NON_BLANK").map(|v| v == "1").unwrap_or(false);
+        let use_best_non_blank = std::env::var("OPEN_FLOW_BEST_NON_BLANK")
+            .map(|v| v == "1")
+            .unwrap_or(false);
 
         let mut prev_id = -1i32;
         let mut result = Vec::new();
@@ -164,7 +180,11 @@ impl CTCDecoder {
             };
 
             if id_to_emit == blank_id_use || id_to_emit == prev_id {
-                prev_id = if max_id == blank_id_use { max_id } else { id_to_emit };
+                prev_id = if max_id == blank_id_use {
+                    max_id
+                } else {
+                    id_to_emit
+                };
                 continue;
             }
             if let Some(token) = self.id_to_token.get(&id_to_emit) {
@@ -239,7 +259,12 @@ mod tests {
         }
         let blank_id = token_to_id.get("<blank>").copied().unwrap_or(0);
         let has_explicit_blank = token_to_id.contains_key("<blank>");
-        CTCDecoder { token_to_id, id_to_token, blank_id, has_explicit_blank }
+        CTCDecoder {
+            token_to_id,
+            id_to_token,
+            blank_id,
+            has_explicit_blank,
+        }
     }
 
     /// 全 blank → 空字符串
@@ -248,8 +273,11 @@ mod tests {
         let dec = make_decoder(&[("<blank>", 0), ("你", 1), ("好", 2)]);
         let logits = Array2::from_shape_vec(
             (4, 3),
-            vec![1.0f32,0.0,0.0, 1.0,0.0,0.0, 1.0,0.0,0.0, 1.0,0.0,0.0],
-        ).unwrap();
+            vec![
+                1.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+            ],
+        )
+        .unwrap();
         assert_eq!(dec.decode(&logits, false), "");
     }
 
@@ -277,15 +305,23 @@ mod tests {
             (4, 5),
             vec![
                 0.0f32, 1.0, 0.0, 0.0, 0.0, // <|zh|>
-                0.0, 0.0, 1.0, 0.0, 0.0,     // <|HAPPY|>
-                0.0, 0.0, 0.0, 1.0, 0.0,     // 你
-                0.0, 0.0, 0.0, 0.0, 1.0,     // 好
+                0.0, 0.0, 1.0, 0.0, 0.0, // <|HAPPY|>
+                0.0, 0.0, 0.0, 1.0, 0.0, // 你
+                0.0, 0.0, 0.0, 0.0, 1.0, // 好
             ],
-        ).unwrap();
+        )
+        .unwrap();
         let result = dec.decode(&logits, false);
-        assert!(!result.contains("<|"), "特殊 token 不应出现在结果中，got: {:?}", result);
-        assert!(result.contains("你") && result.contains("好"),
-            "正常汉字应出现在结果中，got: {:?}", result);
+        assert!(
+            !result.contains("<|"),
+            "特殊 token 不应出现在结果中，got: {:?}",
+            result
+        );
+        assert!(
+            result.contains("你") && result.contains("好"),
+            "正常汉字应出现在结果中，got: {:?}",
+            result
+        );
     }
 
     /// 连续相同 token 合并（CTC 规则）
@@ -297,27 +333,21 @@ mod tests {
             (5, 2),
             vec![
                 0.0f32, 1.0, // a
-                0.0, 1.0,    // a
-                0.0, 1.0,    // a
-                1.0, 0.0,    // blank
-                0.0, 1.0,    // a
+                0.0, 1.0, // a
+                0.0, 1.0, // a
+                1.0, 0.0, // blank
+                0.0, 1.0, // a
             ],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(dec.decode(&logits, false), "aa");
     }
 
     /// ▁ 前缀正确转换为空格
     #[test]
     fn test_decode_triangle_space_prefix() {
-        let dec = make_decoder(&[
-            ("<blank>", 0),
-            ("▁hello", 1),
-            ("▁world", 2),
-        ]);
-        let logits = Array2::from_shape_vec(
-            (2, 3),
-            vec![0.0f32, 1.0, 0.0, 0.0, 0.0, 1.0],
-        ).unwrap();
+        let dec = make_decoder(&[("<blank>", 0), ("▁hello", 1), ("▁world", 2)]);
+        let logits = Array2::from_shape_vec((2, 3), vec![0.0f32, 1.0, 0.0, 0.0, 0.0, 1.0]).unwrap();
         assert_eq!(dec.decode(&logits, false), "hello world");
     }
 }

@@ -128,8 +128,12 @@ impl AsrEngine {
 
     /// 加载模型
     fn load_model(&mut self) -> Result<()> {
-        let model_file = Self::find_model_file(&self.model_path)
-            .ok_or_else(|| anyhow::anyhow!("模型文件不存在（已查找 model.onnx / model_quant.onnx）: {:?}", self.model_path))?;
+        let model_file = Self::find_model_file(&self.model_path).ok_or_else(|| {
+            anyhow::anyhow!(
+                "模型文件不存在（已查找 model.onnx / model_quant.onnx）: {:?}",
+                self.model_path
+            )
+        })?;
         let tokens_file = self.model_path.join("tokens.json");
 
         if !tokens_file.exists() {
@@ -188,7 +192,11 @@ impl AsrEngine {
     ) -> Result<TranscriptionResult> {
         let start = Instant::now();
 
-        info!("📝 开始转写（内存 PCM，{} 样本，{}Hz）", samples.len(), sample_rate);
+        info!(
+            "📝 开始转写（内存 PCM，{} 样本，{}Hz）",
+            samples.len(),
+            sample_rate
+        );
 
         if !self.ready {
             warn!("⚠️  模型未就绪，使用模拟转写");
