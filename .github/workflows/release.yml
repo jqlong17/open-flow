@@ -123,6 +123,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # download-artifact 会把多个 artifact 合并到当前目录，文件在根下
+          TAG="${{ steps.tag.outputs.tag }}"
           MACOS_TAR="open-flow-aarch64-apple-darwin.tar.gz"
           MACOS_ZIP="$(ls Open-Flow-*-macos-aarch64.app.zip 2>/dev/null | head -1)"
           LINUX_TAR="open-flow-x86_64-unknown-linux-gnu.tar.gz"
@@ -130,12 +131,22 @@ jobs:
           for f in "$MACOS_TAR" "$MACOS_ZIP" "$LINUX_TAR" "$WIN_ZIP"; do
             [ -n "$f" ] && [ -f "$f" ] || { echo "Missing: $f"; exit 1; }
           done
-          gh release create "${{ steps.tag.outputs.tag }}" \
-            "$MACOS_TAR" "$MACOS_ZIP" "$LINUX_TAR" "$WIN_ZIP" \
-            --title "${{ steps.tag.outputs.tag }}" \
-            --notes "## ${{ steps.tag.outputs.tag }}
+          NOTES=$(cat <<EOF
+          ## ${TAG}
 
           - **macOS (Apple Silicon)**：\`open-flow-aarch64-apple-darwin.tar.gz\`（CLI）或 \`Open-Flow-*-macos-aarch64.app.zip\`（.app 双击运行）
           - **Linux (x86_64)**：\`open-flow-x86_64-unknown-linux-gnu.tar.gz\`（CLI），解压后 \`open-flow start --foreground\`，热键右 Meta，粘贴需 xdotool/wtype
           - **Windows (x86_64)**：\`open-flow-x86_64-pc-windows-msvc.zip\`（CLI），解压得到 \`open-flow.exe\`，\`open-flow.exe start --foreground\`，热键右侧 Win 键，转写结果剪贴板（Ctrl+V 粘贴）
-          "
+          EOF
+          )
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, uploading assets and refreshing notes..."
+            gh release upload "$TAG" "$MACOS_TAR" "$MACOS_ZIP" "$LINUX_TAR" "$WIN_ZIP" --clobber
+            gh release edit "$TAG" --title "$TAG" --notes "$NOTES"
+          else
+            gh release create "$TAG" \
+              "$MACOS_TAR" "$MACOS_ZIP" "$LINUX_TAR" "$WIN_ZIP" \
+              --title "$TAG" \
+              --notes "$NOTES"
+          fi
