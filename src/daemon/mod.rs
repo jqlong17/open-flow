@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::info;
@@ -8,6 +8,7 @@ use crate::asr::AsrProvider;
 use crate::audio::AudioCapture;
 use crate::common::memory;
 use crate::common::types::{HotkeyEvent, RecordingState, TranscriptionResult};
+use crate::draft_panel::DraftPanelEvent;
 use crate::hotkey::{
     check_accessibility_permission, request_accessibility_permission, HotkeyListener,
 };
@@ -19,15 +20,12 @@ use crate::tray::{TrayHandle, TrayIconState};
 pub enum DaemonEvent {
     Hotkey(HotkeyEvent),
     TranscriptionComplete(String),
-    /// 热键监听线程已退出（崩溃或 channel 断开），daemon 应停止
     HotkeyListenerDead,
 }
 
 pub struct Daemon {
     state: Arc<Mutex<RecordingState>>,
-    /// 转写/粘贴进行中时忽略新热键，避免竞态
     is_processing: AtomicBool,
-    /// 已收到的热键事件次数（用于日志：第 N 次按键）
     hotkey_recv_count: std::sync::atomic::AtomicU64,
     recording_session_count: std::sync::atomic::AtomicU64,
     transcription_count: std::sync::atomic::AtomicU64,
@@ -35,14 +33,16 @@ pub struct Daemon {
     audio_capture: AudioCapture,
     provider: Arc<dyn AsrProvider>,
     text_injector: TextInjector,
-    /// 当前录音流（Some = 正在录音，drop 即停止）
     active_stream: Mutex<Option<cpal::Stream>>,
-    /// 当前录音 session 的缓冲区（每次录音创建新 Arc，防止旧 stream 的 stale 回调污染新 session）
     recording_buffer: Mutex<Arc<Mutex<Vec<f32>>>>,
-    /// 托盘句柄（Send+Sync，状态更新发回主线程）
     tray: Option<Arc<TrayHandle>>,
-    /// 触发模式: "toggle" or "hold"
     trigger_mode: String,
+    draft_mode_active: Arc<AtomicBool>,
+    draft_event_tx: Option<std::sync::mpsc::SyncSender<DraftPanelEvent>>,
+    draft_live_cursor: Arc<AtomicUsize>,
+    draft_live_inflight: Arc<AtomicBool>,
+    draft_live_last_tick: Mutex<std::time::Instant>,
+    draft_live_text: Arc<Mutex<String>>,
 }
 
 const MAX_RECORDING_DURATION_SECS: u64 = 2 * 60 * 60;
@@ -51,7 +51,12 @@ const TRANSCRIBE_SEGMENT_SECS: u64 = 60;
 const TRANSCRIBE_TIMEOUT_SECS: u64 = 120;
 
 impl Daemon {
-    pub fn new(provider: Arc<dyn AsrProvider>, tray: Option<Arc<TrayHandle>>) -> Result<Self> {
+    pub fn new(
+        provider: Arc<dyn AsrProvider>,
+        tray: Option<Arc<TrayHandle>>,
+        draft_mode_active: Arc<AtomicBool>,
+        draft_event_tx: Option<std::sync::mpsc::SyncSender<DraftPanelEvent>>,
+    ) -> Result<Self> {
         let audio_capture = AudioCapture::new().context("初始化音频采集器失败")?;
         let text_injector = TextInjector::new();
         let config = crate::common::config::Config::load().unwrap_or_default();
@@ -70,6 +75,12 @@ impl Daemon {
             recording_buffer: Mutex::new(Arc::new(Mutex::new(Vec::new()))),
             tray,
             trigger_mode: config.trigger_mode,
+            draft_mode_active,
+            draft_event_tx,
+            draft_live_cursor: Arc::new(AtomicUsize::new(0)),
+            draft_live_inflight: Arc::new(AtomicBool::new(false)),
+            draft_live_last_tick: Mutex::new(std::time::Instant::now()),
+            draft_live_text: Arc::new(Mutex::new(String::new())),
         })
     }
 
@@ -192,11 +203,17 @@ impl Daemon {
                             self.set_tray(TrayIconState::Idle);
                             println!("📝 转写完成: {}", text);
                             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                            info!("[Hotkey] 开始粘贴");
-                            if let Err(e) = self.text_injector.inject(&text).await {
-                                eprintln!("⚠️  文字注入失败: {e}");
+                            if self.draft_mode_active.load(Ordering::SeqCst) {
+                                if let Some(ref tx) = self.draft_event_tx {
+                                    let _ = tx.try_send(DraftPanelEvent::SetText(text));
+                                }
+                            } else {
+                                info!("[Hotkey] 开始粘贴");
+                                if let Err(e) = self.text_injector.inject(&text).await {
+                                    eprintln!("⚠️  文字注入失败: {e}");
+                                }
+                                info!("[Hotkey] 粘贴结束");
                             }
-                            info!("[Hotkey] 粘贴结束");
                         }
                         DaemonEvent::HotkeyListenerDead => {
                             eprintln!("❌ 热键监听线程已退出，daemon 停止。请运行 open-flow start 重启。");
@@ -221,6 +238,8 @@ impl Daemon {
                     };
 
                     if let Some(elapsed) = recording_elapsed {
+                        self.maybe_schedule_live_draft_transcription();
+
                         if elapsed.as_secs() >= MAX_RECORDING_DURATION_SECS {
                             eprintln!(
                                 "⚠️  录音已达到最大时长（2 小时），已自动停止并开始转写。"
@@ -256,6 +275,99 @@ impl Daemon {
         if let Some(ref t) = self.tray {
             t.set_state(state);
         }
+    }
+
+    fn maybe_schedule_live_draft_transcription(&self) {
+        if !self.draft_mode_active.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let is_recording = self.state.lock().unwrap().is_recording;
+        if !is_recording {
+            return;
+        }
+
+        let now = std::time::Instant::now();
+        {
+            let mut last_tick = self.draft_live_last_tick.lock().unwrap();
+            if now.duration_since(*last_tick) < std::time::Duration::from_secs(3) {
+                return;
+            }
+            *last_tick = now;
+        }
+
+        if self.draft_live_inflight.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let sample_rate = self.audio_capture.get_info().sample_rate as usize;
+        let min_chunk = sample_rate.saturating_mul(2);
+        let prune_threshold = sample_rate.saturating_mul(30);
+        let mut cursor = self.draft_live_cursor.load(Ordering::SeqCst);
+
+        if cursor >= prune_threshold {
+            let buffer_arc = self.recording_buffer.lock().unwrap().clone();
+            let mut guard = buffer_arc.lock().unwrap();
+            let drain_to = cursor.min(guard.len());
+            if drain_to > 0 {
+                guard.drain(0..drain_to);
+                cursor = cursor.saturating_sub(drain_to);
+                self.draft_live_cursor.store(cursor, Ordering::SeqCst);
+            }
+        }
+
+        let chunk = {
+            let buffer_arc = self.recording_buffer.lock().unwrap().clone();
+            let guard = buffer_arc.lock().unwrap();
+            if cursor >= guard.len() {
+                Vec::new()
+            } else {
+                guard[cursor..].to_vec()
+            }
+        };
+
+        if chunk.len() < min_chunk {
+            self.draft_live_inflight.store(false, Ordering::SeqCst);
+            return;
+        }
+
+        let provider = self.provider.clone();
+        let inflight = self.draft_live_inflight.clone();
+        let cursor_state = self.draft_live_cursor.clone();
+        let draft_event_tx = self.draft_event_tx.clone();
+        let draft_text = self.draft_live_text.clone();
+        let chunk_len = chunk.len();
+        let start_cursor = cursor;
+
+        tokio::spawn(async move {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(TRANSCRIBE_TIMEOUT_SECS),
+                provider.transcribe(&chunk, sample_rate as u32),
+            )
+            .await;
+
+            if let Ok(Ok(r)) = result {
+                cursor_state.store(start_cursor.saturating_add(chunk_len), Ordering::SeqCst);
+                let text = r.text.trim().to_string();
+                if !text.is_empty() {
+                    {
+                        let mut merged = draft_text.lock().unwrap();
+                        if !merged.is_empty() {
+                            merged.push(' ');
+                        }
+                        merged.push_str(&text);
+                    }
+
+                    if let Some(tx) = draft_event_tx {
+                        let mut chunk_text = text;
+                        chunk_text.push(' ');
+                        let _ = tx.try_send(DraftPanelEvent::AppendText(chunk_text));
+                    }
+                }
+            }
+
+            inflight.store(false, Ordering::SeqCst);
+        });
     }
 
     async fn handle_hotkey(&self, event: HotkeyEvent, tx: &mpsc::Sender<DaemonEvent>) {
@@ -354,6 +466,17 @@ impl Daemon {
             state.start_time = Some(std::time::Instant::now());
         }
         self.recording_warning_issued.store(false, Ordering::SeqCst);
+        self.draft_live_cursor.store(0, Ordering::SeqCst);
+        self.draft_live_inflight.store(false, Ordering::SeqCst);
+        *self.draft_live_last_tick.lock().unwrap() = std::time::Instant::now();
+        *self.draft_live_text.lock().unwrap() = String::new();
+
+        if self.draft_mode_active.load(Ordering::SeqCst) {
+            if let Some(ref tx) = self.draft_event_tx {
+                let _ = tx.try_send(DraftPanelEvent::Show);
+                let _ = tx.try_send(DraftPanelEvent::Clear);
+            }
+        }
         println!("[Daemon] start_recording state_updated");
 
         let session_id = self.recording_session_count.fetch_add(1, Ordering::SeqCst) + 1;
@@ -439,10 +562,65 @@ impl Daemon {
             return Ok(());
         }
 
-        // 通过 AsrProvider trait 进行转写（本地或云端）
         let sample_rate = self.audio_capture.get_info().sample_rate;
         let provider = self.provider.clone();
         let transcribe_started_at = std::time::Instant::now();
+
+        if self.draft_mode_active.load(Ordering::SeqCst) {
+            for _ in 0..30 {
+                if !self.draft_live_inflight.load(Ordering::SeqCst) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+
+            let cursor = self
+                .draft_live_cursor
+                .load(Ordering::SeqCst)
+                .min(buffer.len());
+            let tail = &buffer[cursor..];
+            if !tail.is_empty() {
+                let tail_result = self
+                    .transcribe_with_segments(provider.clone(), tail, sample_rate)
+                    .await?;
+                let tail_text = tail_result.text.trim().to_string();
+
+                if !tail_text.is_empty() {
+                    {
+                        let mut merged = self.draft_live_text.lock().unwrap();
+                        if !merged.is_empty() {
+                            merged.push(' ');
+                        }
+                        merged.push_str(&tail_text);
+                    }
+
+                    if let Some(ref tx) = self.draft_event_tx {
+                        let mut chunk_text = tail_text;
+                        chunk_text.push(' ');
+                        let _ = tx.try_send(DraftPanelEvent::AppendText(chunk_text));
+                    }
+                }
+            }
+
+            let final_text = self.draft_live_text.lock().unwrap().trim().to_string();
+            let transcription_id = self.transcription_count.fetch_add(1, Ordering::SeqCst) + 1;
+            self.log_memory_checkpoint(
+                "after_transcribe",
+                Some(format!(
+                    "transcription_id={} duration_ms={} sample_count={} tail_sample_count={} text_chars={}",
+                    transcription_id,
+                    transcribe_started_at.elapsed().as_millis(),
+                    buffer.len(),
+                    tail.len(),
+                    final_text.chars().count(),
+                )),
+            );
+
+            tx.send(DaemonEvent::TranscriptionComplete(final_text))
+                .await
+                .ok();
+            return Ok(());
+        }
 
         let result = match self
             .transcribe_with_segments(provider, &buffer, sample_rate)
@@ -621,7 +799,9 @@ impl Daemon {
 pub async fn run_daemon(
     provider: Arc<dyn AsrProvider>,
     tray: Option<Arc<TrayHandle>>,
+    draft_mode_active: Arc<AtomicBool>,
+    draft_event_tx: Option<std::sync::mpsc::SyncSender<DraftPanelEvent>>,
 ) -> Result<()> {
-    let daemon = Daemon::new(provider, tray)?;
+    let daemon = Daemon::new(provider, tray, draft_mode_active, draft_event_tx)?;
     daemon.run().await
 }

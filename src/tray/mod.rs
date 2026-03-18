@@ -29,6 +29,7 @@ mod platform {
         pub(super) state_tx: std::sync::mpsc::SyncSender<TrayIconState>,
         pub(super) overlay_state_tx: Option<std::sync::mpsc::SyncSender<TrayIconState>>,
         pub(super) exit_requested: Arc<AtomicBool>,
+        pub(super) draft_mode_active: Arc<AtomicBool>,
     }
 
     impl TrayHandle {
@@ -44,6 +45,14 @@ mod platform {
         pub fn set_overlay_sender(&mut self, tx: std::sync::mpsc::SyncSender<TrayIconState>) {
             self.overlay_state_tx = Some(tx);
         }
+
+        pub fn set_draft_mode_active(&self, active: bool) {
+            self.draft_mode_active.store(active, Ordering::SeqCst);
+        }
+
+        pub fn draft_mode_active(&self) -> bool {
+            self.draft_mode_active.load(Ordering::SeqCst)
+        }
     }
 
     /// 托盘图标与菜单（只能在主线程使用）
@@ -54,9 +63,11 @@ mod platform {
         icon_transcribing: Icon,
         status_item: MenuItem,
         update_item: MenuItem,
+        draft_item: MenuItem,
         pub exit_requested: Arc<AtomicBool>,
         pub prefs_requested: Arc<AtomicBool>,
         pub update_requested: Arc<AtomicBool>,
+        pub draft_requested: Arc<AtomicBool>,
         state_rx: std::sync::mpsc::Receiver<TrayIconState>,
     }
 
@@ -69,6 +80,7 @@ mod platform {
             let exit_requested = Arc::new(AtomicBool::new(false));
             let prefs_requested = Arc::new(AtomicBool::new(false));
             let update_requested = Arc::new(AtomicBool::new(false));
+            let draft_requested = Arc::new(AtomicBool::new(false));
             let (state_tx, state_rx) = std::sync::mpsc::sync_channel::<TrayIconState>(16);
 
             let title = MenuItem::with_id(
@@ -78,12 +90,13 @@ mod platform {
                 None,
             );
             let update = MenuItem::with_id("update", "检查更新", true, None);
+            let draft = MenuItem::with_id("draft", "录音草稿", true, None);
             let status_item = MenuItem::with_id("status", "状态：待机", false, None);
             let prefs = MenuItem::with_id("prefs", "偏好设置...", true, None);
             let exit = MenuItem::with_id("exit", "退出", true, None);
 
-            let menu =
-                Menu::with_items(&[&title, &update, &status_item, &prefs, &exit]).map_err(|e| {
+            let menu = Menu::with_items(&[&title, &update, &draft, &status_item, &prefs, &exit])
+                .map_err(|e| {
                     tray_icon::Error::OsError(std::io::Error::new(
                         std::io::ErrorKind::Other,
                         e.to_string(),
@@ -100,6 +113,7 @@ mod platform {
                 state_tx,
                 overlay_state_tx: None,
                 exit_requested: exit_requested.clone(),
+                draft_mode_active: Arc::new(AtomicBool::new(false)),
             };
             let tray_state = Self {
                 tray_icon,
@@ -108,9 +122,11 @@ mod platform {
                 icon_transcribing,
                 status_item,
                 update_item: update,
+                draft_item: draft,
                 exit_requested,
                 prefs_requested,
                 update_requested,
+                draft_requested,
                 state_rx,
             };
             Ok((tray_state, handle))
@@ -137,6 +153,9 @@ mod platform {
                 } else if event.id.as_ref() == "update" {
                     info!("用户点击检查更新菜单");
                     self.update_requested.store(true, Ordering::SeqCst);
+                } else if event.id.as_ref() == "draft" {
+                    info!("用户点击录音草稿菜单");
+                    self.draft_requested.store(true, Ordering::SeqCst);
                 } else if event.id.as_ref() == "title" {
                     let _ = std::process::Command::new("open")
                         .arg("https://github.com/jqlong17/open-flow")
@@ -167,6 +186,14 @@ mod platform {
 
         pub fn update_requested(&self) -> bool {
             self.update_requested.swap(false, Ordering::SeqCst)
+        }
+
+        pub fn draft_requested(&self) -> bool {
+            self.draft_requested.swap(false, Ordering::SeqCst)
+        }
+
+        pub fn set_draft_menu_text(&self, text: &str) {
+            self.draft_item.set_text(text);
         }
 
         pub fn set_update_menu_text(&self, text: &str) {
@@ -219,6 +246,7 @@ mod platform {
 
     pub struct TrayHandle {
         pub(super) exit_requested: Arc<AtomicBool>,
+        pub(super) draft_mode_active: Arc<AtomicBool>,
     }
 
     impl TrayHandle {
@@ -227,6 +255,12 @@ mod platform {
             self.exit_requested.load(Ordering::SeqCst)
         }
         pub fn set_overlay_sender(&mut self, _tx: std::sync::mpsc::SyncSender<TrayIconState>) {}
+        pub fn set_draft_mode_active(&self, active: bool) {
+            self.draft_mode_active.store(active, Ordering::SeqCst);
+        }
+        pub fn draft_mode_active(&self) -> bool {
+            self.draft_mode_active.load(Ordering::SeqCst)
+        }
     }
 
     pub struct TrayState {
@@ -242,6 +276,7 @@ mod platform {
                 },
                 TrayHandle {
                     exit_requested: flag,
+                    draft_mode_active: Arc::new(AtomicBool::new(false)),
                 },
             ))
         }
@@ -257,6 +292,10 @@ mod platform {
         pub fn update_requested(&self) -> bool {
             false
         }
+        pub fn draft_requested(&self) -> bool {
+            false
+        }
+        pub fn set_draft_menu_text(&self, _text: &str) {}
         pub fn set_update_menu_text(&self, _text: &str) {}
         pub fn set_update_menu_enabled(&self, _enabled: bool) {}
         pub fn hide_from_menu_bar(&self) {}

@@ -495,13 +495,20 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     use crate::overlay::OverlayWindow;
     let overlay = OverlayWindow::new();
     let (overlay_tx, overlay_rx) = std::sync::mpsc::sync_channel::<TrayIconState>(16);
-    // 在包装为 Arc 之前设置 overlay sender
     if let Some(ref mut handle) = tray_handle_raw {
         handle.set_overlay_sender(overlay_tx);
     }
     let tray_handle = tray_handle_raw.map(Arc::new);
     if overlay.is_some() {
         tracing::info!("✅ 浮动指示器已创建");
+    }
+
+    use crate::draft_panel::{DraftPanel, DraftPanelEvent};
+    let draft_panel = DraftPanel::new().map(Arc::new);
+    let (draft_tx, draft_rx) = std::sync::mpsc::sync_channel::<DraftPanelEvent>(64);
+    let draft_mode_active = Arc::new(AtomicBool::new(false));
+    if draft_panel.is_some() {
+        tracing::info!("✅ 草稿面板已创建");
     }
 
     // ── Settings app 路径（与主二进制同目录）──────────────────────
@@ -548,6 +555,7 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
 
     let daemon_alive = Arc::new(AtomicBool::new(true));
     let daemon_alive_clone = daemon_alive.clone();
+    let draft_mode_active_for_daemon = draft_mode_active.clone();
 
     let daemon_handle = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -555,7 +563,14 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
             .build()
             .expect("daemon tokio runtime");
         rt.block_on(async {
-            if let Err(e) = run_daemon(provider, tray_handle).await {
+            if let Err(e) = run_daemon(
+                provider,
+                tray_handle,
+                draft_mode_active_for_daemon,
+                Some(draft_tx),
+            )
+            .await
+            {
                 eprintln!("Daemon 错误: {}", e);
             }
         });
@@ -567,6 +582,9 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
         tray.as_ref(),
         overlay.as_ref(),
         &overlay_rx,
+        draft_panel.as_deref(),
+        &draft_rx,
+        draft_mode_active.as_ref(),
         settings_app_path.as_deref(),
         &daemon_alive,
         my_pid,
@@ -611,6 +629,9 @@ fn run_main_loop(
     tray: Option<&TrayState>,
     overlay: Option<&crate::overlay::OverlayWindow>,
     overlay_rx: &std::sync::mpsc::Receiver<TrayIconState>,
+    draft_panel: Option<&crate::draft_panel::DraftPanel>,
+    draft_rx: &std::sync::mpsc::Receiver<crate::draft_panel::DraftPanelEvent>,
+    draft_mode_active: &AtomicBool,
     settings_app_path: Option<&std::path::Path>,
     daemon_alive: &AtomicBool,
     current_pid: u32,
@@ -623,6 +644,7 @@ fn run_main_loop(
     if let Some(t) = tray {
         t.set_update_menu_text("检查更新");
         t.set_update_menu_enabled(true);
+        t.set_draft_menu_text("录音草稿");
     }
 
     loop {
@@ -709,6 +731,20 @@ fn run_main_loop(
             }
         }
 
+        while let Ok(event) = draft_rx.try_recv() {
+            if let Some(panel) = draft_panel {
+                match event {
+                    crate::draft_panel::DraftPanelEvent::Show => panel.show(),
+                    crate::draft_panel::DraftPanelEvent::Hide => panel.hide(),
+                    crate::draft_panel::DraftPanelEvent::Clear => panel.clear(),
+                    crate::draft_panel::DraftPanelEvent::SetText(text) => panel.set_text(&text),
+                    crate::draft_panel::DraftPanelEvent::AppendText(text) => {
+                        panel.append_text(&text)
+                    }
+                }
+            }
+        }
+
         // 驱动平台事件循环：macOS NSRunLoop
         #[cfg(target_os = "macos")]
         pump_run_loop_100ms();
@@ -722,6 +758,27 @@ fn run_main_loop(
                 let _ = std::process::Command::new(path).spawn();
             } else {
                 tracing::warn!("设置应用未找到");
+            }
+        }
+
+        if tray.map_or(false, |t| t.draft_requested()) {
+            let next = !draft_mode_active.load(Ordering::SeqCst);
+            draft_mode_active.store(next, Ordering::SeqCst);
+
+            if let Some(t) = tray {
+                t.set_draft_menu_text(if next {
+                    "录音草稿 ✓"
+                } else {
+                    "录音草稿"
+                });
+            }
+
+            if let Some(panel) = draft_panel {
+                if next {
+                    panel.show();
+                } else {
+                    panel.hide();
+                }
             }
         }
 

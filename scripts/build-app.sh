@@ -8,7 +8,8 @@ cd "$REPO_ROOT"
 BINARY_NAME="open-flow"
 APP_NAME="Open Flow"
 BUNDLE_ID="com.openflow.open-flow"
-APP_DIR="$REPO_ROOT/dist/${APP_NAME}.app"
+DIST_APP_DIR="$REPO_ROOT/dist/${APP_NAME}.app"
+INSTALL_APP_DIR="/Applications/${APP_NAME}.app"
 
 # Kill any running open-flow processes before rebuilding
 echo "Stopping any running Open Flow instances..."
@@ -25,26 +26,31 @@ swift build -c release
 cd "$REPO_ROOT"
 
 echo "Creating .app structure..."
-rm -rf "$APP_DIR"
-mkdir -p "$APP_DIR/Contents/MacOS"
-mkdir -p "$APP_DIR/Contents/Resources"
+rm -rf "$DIST_APP_DIR"
+mkdir -p "$DIST_APP_DIR/Contents/MacOS"
+mkdir -p "$DIST_APP_DIR/Contents/Resources"
 
 # 直接使用 Rust 二进制作为 app 主可执行文件，避免权限记录落在壳脚本上。
-cp "$REPO_ROOT/target/release/$BINARY_NAME" "$APP_DIR/Contents/MacOS/open-flow"
-chmod +x "$APP_DIR/Contents/MacOS/open-flow"
+cp "$REPO_ROOT/target/release/$BINARY_NAME" "$DIST_APP_DIR/Contents/MacOS/open-flow"
+chmod +x "$DIST_APP_DIR/Contents/MacOS/open-flow"
 
 # Settings app helper
-cp "$REPO_ROOT/settings-app/.build/release/OpenFlowSettings" "$APP_DIR/Contents/MacOS/OpenFlowSettings"
-chmod +x "$APP_DIR/Contents/MacOS/OpenFlowSettings"
+cp "$REPO_ROOT/settings-app/.build/release/OpenFlowSettings" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
+chmod +x "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
 
 # 图标
 if [[ -f "$REPO_ROOT/assets/AppIcon.icns" ]]; then
-  cp "$REPO_ROOT/assets/AppIcon.icns" "$APP_DIR/Contents/Resources/"
+  cp "$REPO_ROOT/assets/AppIcon.icns" "$DIST_APP_DIR/Contents/Resources/"
+fi
+
+if [[ -f "$REPO_ROOT/scripts/vibevoice_tts.py" ]]; then
+  cp "$REPO_ROOT/scripts/vibevoice_tts.py" "$DIST_APP_DIR/Contents/Resources/vibevoice_tts.py"
+  chmod +x "$DIST_APP_DIR/Contents/Resources/vibevoice_tts.py"
 fi
 
 # Info.plist（版本号从 Cargo.toml 读取）
 VERSION=$(grep '^version' "$REPO_ROOT/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/' | tr -d ' ')
-cat > "$APP_DIR/Contents/Info.plist" << EOF
+cat > "$DIST_APP_DIR/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -79,12 +85,18 @@ EOF
 
 echo "Ad-hoc signing app bundle..."
 # Use --identifier to keep a stable identity across rebuilds (preserves TCC permissions)
-codesign --force --deep --sign - --identifier "${BUNDLE_ID}" "$APP_DIR/Contents/MacOS/open-flow"
-codesign --force --deep --sign - --identifier "${BUNDLE_ID}.settings" "$APP_DIR/Contents/MacOS/OpenFlowSettings"
-codesign --force --deep --sign - "$APP_DIR"
+codesign --force --deep --sign - --identifier "${BUNDLE_ID}" "$DIST_APP_DIR/Contents/MacOS/open-flow"
+codesign --force --deep --sign - --identifier "${BUNDLE_ID}.settings" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
+codesign --force --deep --sign - "$DIST_APP_DIR"
 
-echo "Done: $APP_DIR"
-echo "  Double-click to run (same as: open-flow start --foreground)"
-echo ""
-echo "  ⚡ To preserve permissions across rebuilds, install to /Applications:"
-echo "     cp -R \"$APP_DIR\" /Applications/"
+echo "Installing to $INSTALL_APP_DIR ..."
+rm -rf "$INSTALL_APP_DIR" 2>/dev/null || true
+if ! cp -R "$DIST_APP_DIR" "/Applications/" 2>/dev/null; then
+  sudo rm -rf "$INSTALL_APP_DIR"
+  sudo cp -R "$DIST_APP_DIR" "/Applications/"
+fi
+
+echo "Done:"
+echo "  Build artifact: $DIST_APP_DIR"
+echo "  Installed app : $INSTALL_APP_DIR"
+echo "  Run: open \"$INSTALL_APP_DIR\""

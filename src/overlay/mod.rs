@@ -52,7 +52,8 @@ mod platform {
                 let _: () = msg_send![panel, setLevel: 25i64]; // NSStatusWindowLevel (above everything)
                 let _: () = msg_send![panel, setOpaque: NO];
                 let _: () = msg_send![panel, setHasShadow: NO];
-                let _: () = msg_send![panel, setIgnoresMouseEvents: YES];
+                let _: () = msg_send![panel, setIgnoresMouseEvents: NO];
+                let _: () = msg_send![panel, setMovableByWindowBackground: YES];
                 // canJoinAllSpaces | stationary (visible on all spaces, doesn't move with space switch)
                 let _: () = msg_send![panel, setCollectionBehavior: (1u64 << 0) | (1u64 << 4)];
                 // Allow panel to show even when app is not active (critical for Accessory apps)

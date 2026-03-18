@@ -8,6 +8,7 @@ use tracing::info;
 use open_flow::asr;
 use open_flow::audio;
 use open_flow::common;
+use open_flow::draft_panel;
 use open_flow::hotkey;
 use open_flow::overlay;
 use open_flow::text_injection;

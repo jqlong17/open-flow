@@ -71,7 +71,7 @@ impl HotkeyListener {
             vec![CGEventType::FlagsChanged],
             move |_proxy, event_type, event| {
                 if event_type as u32 != CGEventType::FlagsChanged as u32 {
-                    return None;
+                    return Some(event.clone());
                 }
 
                 if is_fn_key {
@@ -102,7 +102,7 @@ impl HotkeyListener {
                     let keycode =
                         event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
                     if keycode != KeyCode::RIGHT_COMMAND {
-                        return None;
+                        return Some(event.clone());
                     }
 
                     let is_pressed = event.get_flags().contains(CGEventFlags::CGEventFlagCommand);
@@ -141,7 +141,7 @@ impl HotkeyListener {
                     }
                 }
 
-                None
+                Some(event.clone())
             },
         )
         .map_err(|_| anyhow::anyhow!("CGEventTap 创建失败，请确认已授予辅助功能和输入监控权限"))?;
