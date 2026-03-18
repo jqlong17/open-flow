@@ -1,21 +1,22 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const VIBEVOICE_MODEL_ID: &str = "microsoft/VibeVoice-Realtime-0.5B";
-
 pub fn synthesize_to_mp3(text: &str) -> Result<PathBuf, String> {
     if text.trim().is_empty() {
         return Err("文本为空，无法转音频".to_string());
     }
 
-    let script = app_resource_script_path().ok_or_else(|| "找不到 TTS 脚本路径".to_string())?;
-    if !script.exists() {
-        return Err(format!("TTS 脚本不存在: {}", script.display()));
-    }
-
-    ensure_command("python3")?;
-    ensure_command("ffmpeg")?;
-    ensure_python_runtime()?;
+    let say_bin =
+        resolve_binary("say", &["/usr/bin/say"]).ok_or_else(|| "缺少系统命令: say".to_string())?;
+    let ffmpeg_bin = resolve_binary(
+        "ffmpeg",
+        &[
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/usr/bin/ffmpeg",
+        ],
+    )
+    .ok_or_else(|| "缺少 ffmpeg。请安装后重试（例如: brew install ffmpeg）".to_string())?;
 
     let home = std::env::var("HOME").map_err(|_| "无法获取 HOME 目录".to_string())?;
     let downloads = PathBuf::from(home).join("Downloads");
@@ -23,35 +24,28 @@ pub fn synthesize_to_mp3(text: &str) -> Result<PathBuf, String> {
 
     let stamp = timestamp_string();
     let mp3_path = downloads.join(format!("open-flow-{}.mp3", stamp));
-    let wav_path = std::env::temp_dir().join(format!("open-flow-{}.wav", stamp));
+    let aiff_path = std::env::temp_dir().join(format!("open-flow-{}.aiff", stamp));
     let txt_path = std::env::temp_dir().join(format!("open-flow-{}.txt", stamp));
 
     std::fs::write(&txt_path, text).map_err(|e| e.to_string())?;
 
-    let py = Command::new("python3")
-        .arg(script)
-        .arg("--text-file")
+    let say_out = Command::new(&say_bin)
+        .arg("-f")
         .arg(&txt_path)
-        .arg("--wav-out")
-        .arg(&wav_path)
-        .arg("--model")
-        .arg(VIBEVOICE_MODEL_ID)
+        .arg("-o")
+        .arg(&aiff_path)
         .output()
-        .map_err(|e| format!("执行 python3 失败: {}", e))?;
+        .map_err(|e| format!("执行 say 失败: {}", e))?;
 
-    if !py.status.success() {
-        let stderr = String::from_utf8_lossy(&py.stderr);
-        let stdout = String::from_utf8_lossy(&py.stdout);
-        return Err(format!(
-            "VibeVoice 推理失败\nstdout: {}\nstderr: {}",
-            stdout, stderr
-        ));
+    if !say_out.status.success() {
+        let stderr = String::from_utf8_lossy(&say_out.stderr);
+        return Err(format!("系统 TTS 生成失败: {}", stderr.trim()));
     }
 
-    let ffmpeg = Command::new("ffmpeg")
+    let ffmpeg_out = Command::new(&ffmpeg_bin)
         .arg("-y")
         .arg("-i")
-        .arg(&wav_path)
+        .arg(&aiff_path)
         .arg("-codec:a")
         .arg("libmp3lame")
         .arg("-q:a")
@@ -60,54 +54,70 @@ pub fn synthesize_to_mp3(text: &str) -> Result<PathBuf, String> {
         .output()
         .map_err(|e| format!("执行 ffmpeg 失败: {}", e))?;
 
-    if !ffmpeg.status.success() {
-        let stderr = String::from_utf8_lossy(&ffmpeg.stderr);
-        return Err(format!("wav 转 mp3 失败: {}", stderr));
+    if !ffmpeg_out.status.success() {
+        let stderr = String::from_utf8_lossy(&ffmpeg_out.stderr);
+        return Err(format!("音频转码失败: {}", stderr.trim()));
     }
 
-    let _ = std::fs::remove_file(&wav_path);
+    let _ = std::fs::remove_file(&aiff_path);
     let _ = std::fs::remove_file(&txt_path);
 
     Ok(mp3_path)
 }
 
-pub fn app_resource_script_path() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let resources = exe.parent()?.parent()?.join("Resources");
-    Some(resources.join("vibevoice_tts.py"))
+pub fn probe_runtime() -> Result<(), String> {
+    let has_say = resolve_binary("say", &["/usr/bin/say"]).is_some();
+    if !has_say {
+        return Err("缺少系统命令: say".to_string());
+    }
+
+    let has_ffmpeg = resolve_binary(
+        "ffmpeg",
+        &[
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/usr/bin/ffmpeg",
+        ],
+    )
+    .is_some();
+    if !has_ffmpeg {
+        return Err("缺少 ffmpeg。请安装后重试（brew install ffmpeg）".to_string());
+    }
+
+    Ok(())
 }
 
-fn ensure_command(name: &str) -> Result<(), String> {
+fn resolve_binary(name: &str, candidates: &[&str]) -> Option<PathBuf> {
+    for candidate in candidates {
+        let p = PathBuf::from(candidate);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
     let status = Command::new("sh")
         .arg("-lc")
         .arg(format!("command -v {} >/dev/null 2>&1", name))
         .status()
-        .map_err(|e| format!("检测 {} 失败: {}", name, e))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("缺少命令: {}", name))
+        .ok()?;
+    if !status.success() {
+        return None;
     }
-}
 
-fn ensure_python_runtime() -> Result<(), String> {
-    let code = "import torch; import vibevoice";
-    let out = Command::new("python3")
-        .arg("-c")
-        .arg(code)
+    let out = Command::new("sh")
+        .arg("-lc")
+        .arg(format!("command -v {}", name))
         .output()
-        .map_err(|e| format!("检测 Python 运行时失败: {}", e))?;
-
-    if out.status.success() {
-        return Ok(());
+        .ok()?;
+    if !out.status.success() {
+        return None;
     }
-
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    Err(format!(
-        "Python 依赖未就绪（需要 torch + vibevoice）。建议执行:\n  git clone https://github.com/microsoft/VibeVoice.git\n  cd VibeVoice\n  pip install -e .[streamingtts]\n错误: {}",
-        stderr.trim()
-    ))
+    let path = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
+    }
 }
 
 fn timestamp_string() -> String {
@@ -128,19 +138,16 @@ fn timestamp_string() -> String {
     })
 }
 
-pub fn probe_runtime() -> Result<(), String> {
-    let script = app_resource_script_path().ok_or_else(|| "找不到 TTS 脚本路径".to_string())?;
-    if !script.exists() {
-        return Err(format!("TTS 脚本不存在: {}", script.display()));
-    }
-    ensure_command("python3")?;
-    ensure_command("ffmpeg")?;
-    ensure_python_runtime()?;
-    Ok(())
-}
-
 pub fn audio_duration_secs(path: &Path) -> Option<f64> {
-    let out = Command::new("ffprobe")
+    let ffprobe = resolve_binary(
+        "ffprobe",
+        &[
+            "/opt/homebrew/bin/ffprobe",
+            "/usr/local/bin/ffprobe",
+            "/usr/bin/ffprobe",
+        ],
+    )?;
+    let out = Command::new(ffprobe)
         .arg("-v")
         .arg("error")
         .arg("-show_entries")
