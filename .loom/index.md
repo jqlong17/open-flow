@@ -1,6 +1,6 @@
 ---
-updated: 2026-03-19T00:32:45.238Z
-total_entries: 1
+updated: 2026-03-19T02:07:27.457Z
+total_entries: 2
 ---
 
 # Loom System Index
@@ -13,7 +13,7 @@ total_entries: 1
 
 ## Decisions
 
-_No entries yet._
+- [采用 Daemon + CLI 架构的原因](decisions/采用-daemon-cli-架构的原因.md) — tags: adr, architecture, daemon, cli, cross-platform — updated: 2026-03-19T02:07:27.451Z
 
 ## Threads
 
