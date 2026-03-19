@@ -1,6 +1,6 @@
 ---
-updated: 2026-03-19T02:07:27.457Z
-total_entries: 2
+updated: 2026-03-19T02:08:05.701Z
+total_entries: 3
 ---
 
 # Loom System Index
@@ -17,4 +17,4 @@ total_entries: 2
 
 ## Threads
 
-_No entries yet._
+- [Loom 初始化与架构知识沉淀（2026-03-19）](threads/loom-初始化与架构知识沉淀-2026-03-19.md) — tags: loom, knowledge-base, architecture, adr, onboarding — updated: 2026-03-19T02:08:05.699Z
