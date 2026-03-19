@@ -1,6 +1,6 @@
 ---
-updated: 2026-03-19T02:08:05.701Z
-total_entries: 3
+updated: 2026-03-19T02:09:13.747Z
+total_entries: 4
 ---
 
 # Loom System Index
@@ -9,6 +9,7 @@ total_entries: 3
 
 ## Concepts
 
+- [Open Flow 技术架构（当前实现）](concepts/open-flow-技术架构-当前实现.md) — tags: architecture, technical, rust, asr, daemon, cli, cross-platform — updated: 2026-03-19T02:09:13.744Z
 - [Open Flow 系统架构概览](concepts/open-flow-系统架构概览.md) — tags: architecture, rust, asr, cross-platform, daemon — updated: 2026-03-19T00:32:45.236Z
 
 ## Decisions
