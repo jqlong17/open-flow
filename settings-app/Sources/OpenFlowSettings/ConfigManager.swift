@@ -6,6 +6,9 @@ import AppKit
 class ConfigManager: ObservableObject {
     // Config fields
     @Published var provider: String = "local"
+    @Published var ttsProvider: String = "system"
+    @Published var ttsModel: String = "microsoft/VibeVoice-Realtime-0.5B"
+    @Published var ttsVoicePath: String = ""
     @Published var modelPreset: String = "quantized"
     @Published var groqApiKey: String = ""
     @Published var groqModel: String = "whisper-large-v3-turbo"
@@ -37,10 +40,28 @@ class ConfigManager: ObservableObject {
     @Published var modelDownloadStatus: String = ""
     @Published var modelDownloadOutput: String = ""
 
+    @Published var ttsDepsChecking = false
+    @Published var ttsDepsLastResult = "Not checked"
+    @Published var ttsHasSay = false
+    @Published var ttsHasFfmpeg = false
+    @Published var ttsHasPython = false
+    @Published var ttsHasBundledScript = false
+    @Published var ttsHasVibevoiceRuntime = false
+    @Published var ttsHasVoiceFile = false
+    @Published var ttsInstallInProgress = false
+    @Published var ttsInstallProgress: Double = 0
+    @Published var ttsInstallStatus = ""
+    @Published var ttsInstallOutput = ""
+
     // Log
     @Published var logContent: String = ""
 
     static let groqModels = ["whisper-large-v3-turbo", "whisper-large-v3"]
+    static let ttsProviders = ["system", "local_model"]
+    static let ttsProviderLabels = [
+        "system": "System (macOS)",
+        "local_model": "Local Model (Python + VibeVoice)"
+    ]
     static let localModelPresets = ["quantized", "fp16"]
     static let localModelPresetLabels = [
         "quantized": "Quantized (default, smaller)",
@@ -66,6 +87,7 @@ class ConfigManager: ObservableObject {
         load()
         refreshStatus()
         refreshPermissions()
+        refreshTtsDependencies()
 
         // Poll daemon status and permissions every 3 seconds
         statusTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
@@ -169,6 +191,9 @@ class ConfigManager: ObservableObject {
 
             switch key {
             case "provider": provider = value
+            case "tts_provider": ttsProvider = value
+            case "tts_model": ttsModel = value.isEmpty ? "microsoft/VibeVoice-Realtime-0.5B" : value
+            case "tts_voice_path": ttsVoicePath = value
             case "model_preset": modelPreset = value.isEmpty ? "quantized" : value
             case "groq_api_key": groqApiKey = value
             case "groq_model": groqModel = value
@@ -194,6 +219,9 @@ class ConfigManager: ObservableObject {
 
         let ourValues: [(String, String)] = [
             ("provider", provider),
+            ("tts_provider", normalizedTtsProvider),
+            ("tts_model", normalizedTtsModel),
+            ("tts_voice_path", ttsVoicePath),
             ("model_preset", normalizedModelPreset),
             ("groq_api_key", groqApiKey),
             ("groq_model", groqModel),
@@ -571,6 +599,446 @@ class ConfigManager: ObservableObject {
 
     var normalizedModelPreset: String {
         modelPreset == "fp16" ? "fp16" : "quantized"
+    }
+
+    var ttsDepsReady: Bool {
+        if normalizedTtsProvider == "local_model" {
+            return ttsHasPython && ttsHasFfmpeg && ttsHasBundledScript && ttsHasVibevoiceRuntime && ttsHasVoiceFile
+        }
+        return ttsHasSay && ttsHasFfmpeg
+    }
+
+    var ttsCanAutoInstall: Bool {
+        normalizedTtsProvider == "local_model"
+    }
+
+    var normalizedTtsProvider: String {
+        ttsProvider == "local_model" ? "local_model" : "system"
+    }
+
+    var normalizedTtsModel: String {
+        let v = ttsModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return v.isEmpty ? "microsoft/VibeVoice-Realtime-0.5B" : v
+    }
+
+    var ttsModelURL: String {
+        if normalizedTtsModel.contains("/") {
+            return "https://huggingface.co/\(normalizedTtsModel)"
+        }
+        return normalizedTtsModel
+    }
+
+    func refreshTtsDependencies() {
+        let provider = normalizedTtsProvider
+        let voicePath = ttsVoicePath.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        DispatchQueue.main.async {
+            self.ttsDepsChecking = true
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+
+            let sayPath = self.findCommandPath("say", candidates: ["/usr/bin/say"])
+            let ffmpegPath = self.findCommandPath("ffmpeg", candidates: ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"])
+            let pythonCandidates = self.findPythonCandidates()
+            let pythonPath = pythonCandidates.first
+            let scriptPath = self.findBundledTtsScriptPath()
+
+            var hasRuntime = false
+            var runtimeDetail = ""
+            var runtimePythonPath: String?
+            if provider == "local_model", !pythonCandidates.isEmpty {
+                let probe = self.checkAnyPythonVibevoiceRuntime(candidates: pythonCandidates)
+                hasRuntime = probe.0
+                runtimeDetail = probe.1
+                runtimePythonPath = probe.2
+            }
+
+            let hasVoice: Bool
+            if provider == "local_model" {
+                if !voicePath.isEmpty {
+                    hasVoice = FileManager.default.fileExists(atPath: voicePath)
+                } else {
+                    hasVoice = self.findAnyVoiceEmbeddingPt()
+                }
+            } else {
+                hasVoice = true
+            }
+
+            let summary: String
+            if provider == "local_model" {
+                let ok = !pythonCandidates.isEmpty && ffmpegPath != nil && scriptPath != nil && hasRuntime && hasVoice
+                summary = ok ? "Local model TTS is ready" : "Local model TTS has missing dependencies"
+            } else {
+                let ok = sayPath != nil && ffmpegPath != nil
+                summary = ok ? "System TTS is ready" : "System TTS has missing dependencies"
+            }
+
+            var logLines: [String] = []
+            logLines.append("[TTS][DependencyCheck] provider=\(provider) summary=\(summary)")
+            logLines.append("[TTS][DependencyCheck] say=\(sayPath ?? "missing (failed command: command -v say)")")
+            logLines.append("[TTS][DependencyCheck] ffmpeg=\(ffmpegPath ?? "missing (failed command: command -v ffmpeg)")")
+            if provider == "local_model" {
+                let candidatesLine = pythonCandidates.isEmpty ? "none" : pythonCandidates.joined(separator: ",")
+                logLines.append("[TTS][DependencyCheck] python_candidates=\(candidatesLine)")
+                logLines.append("[TTS][DependencyCheck] python3=\(runtimePythonPath ?? pythonPath ?? "missing (failed command: command -v python3)")")
+                logLines.append("[TTS][DependencyCheck] bundled_script=\(scriptPath ?? "missing (failed command: test -f <app>/Contents/Resources/vibevoice_tts.py)")")
+                if !runtimeDetail.isEmpty {
+                    logLines.append("[TTS][DependencyCheck] python_runtime=\(runtimeDetail)")
+                } else {
+                    logLines.append("[TTS][DependencyCheck] python_runtime=\(hasRuntime ? "ok" : "failed")")
+                }
+                if !voicePath.isEmpty {
+                    logLines.append("[TTS][DependencyCheck] voice_file=\(hasVoice ? "ok path=\(voicePath)" : "missing path=\(voicePath) (failed command: test -f \(voicePath))")")
+                } else {
+                    logLines.append("[TTS][DependencyCheck] voice_file=\(hasVoice ? "ok auto-detected" : "missing auto-detected")")
+                }
+            }
+
+            self.appendDaemonLog(logLines)
+
+            DispatchQueue.main.async {
+                self.ttsHasSay = sayPath != nil
+                self.ttsHasFfmpeg = ffmpegPath != nil
+                self.ttsHasPython = !pythonCandidates.isEmpty
+                self.ttsHasBundledScript = scriptPath != nil
+                self.ttsHasVibevoiceRuntime = provider == "local_model" ? hasRuntime : true
+                self.ttsHasVoiceFile = hasVoice
+                self.ttsDepsLastResult = summary
+                self.ttsDepsChecking = false
+            }
+        }
+    }
+
+    func installTtsDependencies() {
+        guard normalizedTtsProvider == "local_model" else { return }
+        guard !ttsInstallInProgress else { return }
+
+        DispatchQueue.main.async {
+            self.ttsInstallInProgress = true
+            self.ttsInstallProgress = 0
+            self.ttsInstallStatus = "Preparing dependency installation..."
+            self.ttsInstallOutput = ""
+        }
+
+        appendDaemonLog(["[TTS][Installer] start"])
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+
+            let totalSteps = 7.0
+            var completed = 0.0
+            let updateStep: (String) -> Void = { status in
+                completed += 1.0
+                let progress = min(max(completed / totalSteps, 0), 1)
+                DispatchQueue.main.async {
+                    self.ttsInstallStatus = status
+                    self.ttsInstallProgress = progress
+                }
+            }
+
+            do {
+                var python = self.findPythonCandidates().first
+
+                if python == nil {
+                    guard let brew = self.findCommandPath("brew", candidates: ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]) else {
+                        throw NSError(domain: "TTS", code: 1, userInfo: [NSLocalizedDescriptionKey: "python3 未找到，且 brew 不可用，无法自动安装"]) 
+                    }
+                    try self.runLoggedCommand(program: brew, args: ["install", "python"], label: "install_python")
+                    python = self.findPythonCandidates().first
+                }
+                updateStep("Python ready")
+
+                if self.findCommandPath("ffmpeg", candidates: ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"]) == nil {
+                    guard let brew = self.findCommandPath("brew", candidates: ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]) else {
+                        throw NSError(domain: "TTS", code: 2, userInfo: [NSLocalizedDescriptionKey: "ffmpeg 未找到，且 brew 不可用，无法自动安装"]) 
+                    }
+                    try self.runLoggedCommand(program: brew, args: ["install", "ffmpeg"], label: "install_ffmpeg")
+                }
+                updateStep("ffmpeg ready")
+
+                guard let bootstrapPython = python else {
+                    throw NSError(domain: "TTS", code: 3, userInfo: [NSLocalizedDescriptionKey: "无法定位可用 python3"]) 
+                }
+
+                let venvDir = self.dataDir.appendingPathComponent("tts-pyenv")
+                let venvPython = venvDir.appendingPathComponent("bin/python3").path
+                if !FileManager.default.fileExists(atPath: venvPython) {
+                    try self.runLoggedCommand(program: bootstrapPython, args: ["-m", "venv", venvDir.path], label: "create_venv")
+                } else {
+                    self.appendDaemonLog(["[TTS][Installer] reuse venv path=\(venvDir.path)"])
+                }
+                updateStep("virtualenv ready")
+
+                try self.runLoggedCommand(program: venvPython, args: ["-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"], label: "upgrade_pip")
+                updateStep("pip toolchain ready")
+
+                try self.runLoggedCommand(program: venvPython, args: ["-m", "pip", "install", "torch"], label: "install_torch")
+                updateStep("torch installed")
+
+                try self.runLoggedCommand(
+                    program: venvPython,
+                    args: [
+                        "-m", "pip", "install",
+                        "numpy",
+                        "tqdm",
+                        "requests",
+                        "transformers==4.51.3",
+                        "accelerate>=1.6.0",
+                        "safetensors>=0.4.3",
+                        "diffusers",
+                        "soundfile"
+                    ],
+                    label: "install_runtime_deps"
+                )
+                updateStep("runtime deps installed")
+
+                do {
+                    try self.runLoggedCommand(
+                        program: venvPython,
+                        args: ["-m", "pip", "install", "--no-deps", "--force-reinstall", "git+https://github.com/microsoft/VibeVoice.git"],
+                        label: "install_vibevoice_git_nodeps"
+                    )
+                } catch {
+                    try self.runLoggedCommand(
+                        program: venvPython,
+                        args: ["-m", "pip", "install", "--no-deps", "--force-reinstall", "vibevoice"],
+                        label: "install_vibevoice_pypi_nodeps"
+                    )
+                }
+                updateStep("vibevoice installed")
+
+                let verify = self.checkPythonVibevoiceRuntime(python: venvPython)
+                if !verify.0 {
+                    throw NSError(domain: "TTS", code: 4, userInfo: [NSLocalizedDescriptionKey: "依赖验证失败: \(verify.1)"])
+                }
+
+                self.appendDaemonLog(["[TTS][Installer] completed successfully python=\(venvPython)"])
+
+                DispatchQueue.main.async {
+                    self.ttsInstallStatus = "Dependencies installed"
+                    self.ttsInstallProgress = 1
+                    self.ttsInstallInProgress = false
+                    self.refreshTtsDependencies()
+                }
+            } catch {
+                let msg = error.localizedDescription
+                self.appendDaemonLog(["[TTS][Installer] failed error=\(msg)"])
+                DispatchQueue.main.async {
+                    self.ttsInstallStatus = "Install failed"
+                    self.ttsInstallInProgress = false
+                    self.ttsInstallOutput += "\nInstall failed: \(msg)\n"
+                    self.refreshTtsDependencies()
+                }
+            }
+        }
+    }
+
+    private func runLoggedCommand(program: String, args: [String], label: String) throws {
+        let cmd = ([program] + args).joined(separator: " ")
+        appendDaemonLog(["[TTS][Installer] step=\(label) run=\(cmd)"])
+        DispatchQueue.main.async {
+            self.ttsInstallStatus = "Running \(label)..."
+            self.ttsInstallOutput += "\n$ \(cmd)\n"
+        }
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: program)
+        task.arguments = args
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        task.standardOutput = outPipe
+        task.standardError = errPipe
+
+        try task.run()
+        task.waitUntilExit()
+
+        let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let merged = (out + "\n" + err).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !merged.isEmpty {
+            let clipped = String(merged.prefix(1200))
+            appendDaemonLog(["[TTS][Installer] step=\(label) output=\(clipped)"])
+            DispatchQueue.main.async {
+                self.ttsInstallOutput += clipped + "\n"
+            }
+        }
+
+        if task.terminationStatus != 0 {
+            throw NSError(domain: "TTS", code: Int(task.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "\(label) failed (exit \(task.terminationStatus))"])
+        }
+    }
+
+    private func findCommandPath(_ name: String, candidates: [String]) -> String? {
+        let cmdTask = Process()
+        cmdTask.executableURL = URL(fileURLWithPath: "/bin/sh")
+        cmdTask.arguments = ["-lc", "command -v \(name)"]
+        let cmdPipe = Pipe()
+        cmdTask.standardOutput = cmdPipe
+        cmdTask.standardError = Pipe()
+        do {
+            try cmdTask.run()
+            cmdTask.waitUntilExit()
+            if cmdTask.terminationStatus == 0 {
+                let out = String(data: cmdPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let path = out, !path.isEmpty { return path }
+            }
+        } catch {
+        }
+
+        for path in candidates {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-lc", "command -v \(name)"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+            guard task.terminationStatus == 0 else { return nil }
+            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return out?.isEmpty == false ? out : nil
+        } catch {
+            return nil
+        }
+    }
+
+    private func findBundledTtsScriptPath() -> String? {
+        guard let exe = Bundle.main.executableURL else { return nil }
+        let resources = exe.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources")
+        let script = resources.appendingPathComponent("vibevoice_tts.py")
+        return FileManager.default.fileExists(atPath: script.path) ? script.path : nil
+    }
+
+    private func findPythonCandidates() -> [String] {
+        var result: [String] = []
+
+        let envOverride = ProcessInfo.processInfo.environment["OPEN_FLOW_TTS_PYTHON"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let envOverride = envOverride,
+           !envOverride.isEmpty,
+           FileManager.default.isExecutableFile(atPath: envOverride) {
+            result.append(envOverride)
+        }
+
+        let venvPython = dataDir.appendingPathComponent("tts-pyenv/bin/python3").path
+        if FileManager.default.isExecutableFile(atPath: venvPython), !result.contains(venvPython) {
+            result.append(venvPython)
+        }
+
+        if let detected = findCommandPath("python3", candidates: ["/usr/bin/python3"]), !detected.isEmpty {
+            if !result.contains(detected) {
+                result.append(detected)
+            }
+        }
+
+        for path in ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"] {
+            if FileManager.default.isExecutableFile(atPath: path), !result.contains(path) {
+                result.append(path)
+            }
+        }
+
+        return result
+    }
+
+    private func checkAnyPythonVibevoiceRuntime(candidates: [String]) -> (Bool, String, String?) {
+        var details: [String] = []
+        for python in candidates {
+            let probe = checkPythonVibevoiceRuntime(python: python)
+            if probe.0 {
+                return (true, "ok", python)
+            }
+            details.append(probe.1)
+        }
+        return (false, details.joined(separator: " | "), nil)
+    }
+
+    private func checkPythonVibevoiceRuntime(python: String) -> (Bool, String) {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: python)
+        task.arguments = ["-c", vibevoiceRuntimeProbeCode()]
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        task.standardOutput = outPipe
+        task.standardError = errPipe
+        do {
+            try task.run()
+            task.waitUntilExit()
+            if task.terminationStatus == 0 {
+                return (true, "ok")
+            }
+            let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let msg = "failed command: \(python) -c <vibevoice runtime probe> stderr=\(err)"
+            return (false, msg)
+        } catch {
+            return (false, "failed command: \(python) -c <vibevoice runtime probe> spawn_error=\(error.localizedDescription)")
+        }
+    }
+
+    private func vibevoiceRuntimeProbeCode() -> String {
+        [
+            "import torch",
+            "import soundfile",
+            "from vibevoice.modular.modeling_vibevoice_streaming_inference import VibeVoiceStreamingForConditionalGenerationInference",
+            "from vibevoice.processor.vibevoice_streaming_processor import VibeVoiceStreamingProcessor"
+        ].joined(separator: "\n")
+    }
+
+    private func findAnyVoiceEmbeddingPt() -> Bool {
+        let roots = [
+            NSString(string: "~/Library/Application Support/com.openflow.open-flow/vibevoice").expandingTildeInPath,
+            NSString(string: "~/Library/Application Support/com.openflow.open-flow").expandingTildeInPath,
+            NSString(string: "~/.cache/huggingface/hub").expandingTildeInPath
+        ]
+
+        for root in roots {
+            guard FileManager.default.fileExists(atPath: root) else { continue }
+            guard let enumerator = FileManager.default.enumerator(atPath: root) else { continue }
+            var scanned = 0
+            let start = Date()
+            while let item = enumerator.nextObject() as? String {
+                scanned += 1
+                if scanned > 15000 || Date().timeIntervalSince(start) > 2.0 {
+                    break
+                }
+                if item.hasSuffix(".pt") && item.contains("voices/streaming_model") {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private func appendDaemonLog(_ lines: [String]) {
+        guard !lines.isEmpty else { return }
+        let logPath = dataDir.appendingPathComponent("daemon.log")
+        let formatter = ISO8601DateFormatter()
+        let ts = formatter.string(from: Date())
+        let payload = lines.map { "[\(ts)] \($0)" }.joined(separator: "\n") + "\n"
+        guard let data = payload.data(using: .utf8) else { return }
+
+        if !FileManager.default.fileExists(atPath: logPath.path) {
+            FileManager.default.createFile(atPath: logPath.path, contents: data)
+            return
+        }
+
+        do {
+            let fh = try FileHandle(forWritingTo: logPath)
+            try fh.seekToEnd()
+            try fh.write(contentsOf: data)
+            try fh.close()
+        } catch {
+        }
     }
 
     var selectedLocalModelLabel: String {

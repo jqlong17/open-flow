@@ -10,6 +10,7 @@ APP_NAME="Open Flow"
 BUNDLE_ID="com.openflow.open-flow"
 DIST_APP_DIR="$REPO_ROOT/dist/${APP_NAME}.app"
 INSTALL_APP_DIR="/Applications/${APP_NAME}.app"
+SIGN_IDENTITY="${OPEN_FLOW_SIGN_IDENTITY:-}"
 
 # Kill any running open-flow processes before rebuilding
 echo "Stopping any running Open Flow instances..."
@@ -41,6 +42,11 @@ chmod +x "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
 # 图标
 if [[ -f "$REPO_ROOT/assets/AppIcon.icns" ]]; then
   cp "$REPO_ROOT/assets/AppIcon.icns" "$DIST_APP_DIR/Contents/Resources/"
+fi
+
+if [[ -f "$REPO_ROOT/scripts/vibevoice_tts.py" ]]; then
+  cp "$REPO_ROOT/scripts/vibevoice_tts.py" "$DIST_APP_DIR/Contents/Resources/vibevoice_tts.py"
+  chmod +x "$DIST_APP_DIR/Contents/Resources/vibevoice_tts.py"
 fi
 
 # Info.plist（版本号从 Cargo.toml 读取）
@@ -78,11 +84,46 @@ cat > "$DIST_APP_DIR/Contents/Info.plist" << EOF
 </plist>
 EOF
 
-echo "Ad-hoc signing app bundle..."
-# Use --identifier to keep a stable identity across rebuilds (preserves TCC permissions)
-codesign --force --deep --sign - --identifier "${BUNDLE_ID}" "$DIST_APP_DIR/Contents/MacOS/open-flow"
-codesign --force --deep --sign - --identifier "${BUNDLE_ID}.settings" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
-codesign --force --deep --sign - "$DIST_APP_DIR"
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  if command -v security >/dev/null 2>&1; then
+    IFS=$'\n' read -r -d '' -a SIGN_IDENTITIES < <(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(.*\)"/\1/p'; printf '\0')
+
+    for id in "${SIGN_IDENTITIES[@]}"; do
+      if [[ "$id" == *"Apple Development"* ]]; then
+        SIGN_IDENTITY="$id"
+        break
+      fi
+    done
+
+    if [[ -z "$SIGN_IDENTITY" ]]; then
+      for id in "${SIGN_IDENTITIES[@]}"; do
+        if [[ "$id" == *"Developer ID Application"* ]]; then
+          SIGN_IDENTITY="$id"
+          break
+        fi
+      done
+    fi
+
+    if [[ -z "$SIGN_IDENTITY" && ${#SIGN_IDENTITIES[@]} -gt 0 ]]; then
+      SIGN_IDENTITY="${SIGN_IDENTITIES[0]}"
+    fi
+  fi
+fi
+
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  echo "Signing app bundle with identity: $SIGN_IDENTITY"
+else
+  SIGN_IDENTITY="-"
+  echo "No code-sign identity found. Falling back to ad-hoc signing (-)."
+  echo "Tip: export OPEN_FLOW_SIGN_IDENTITY=\"Apple Development: Your Name (TEAMID)\""
+fi
+
+codesign --force --sign "$SIGN_IDENTITY" --identifier "${BUNDLE_ID}" "$DIST_APP_DIR/Contents/MacOS/open-flow"
+codesign --force --sign "$SIGN_IDENTITY" --identifier "${BUNDLE_ID}.settings" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
+codesign --force --deep --sign "$SIGN_IDENTITY" "$DIST_APP_DIR"
+
+echo "Signing result:"
+codesign -dv --verbose=2 "$DIST_APP_DIR" 2>&1 | sed -n 's/^Identifier=/  Identifier=/p; s/^TeamIdentifier=/  TeamIdentifier=/p; s/^Authority=/  Authority=/p'
 
 echo "Installing to $INSTALL_APP_DIR ..."
 rm -rf "$INSTALL_APP_DIR" 2>/dev/null || true

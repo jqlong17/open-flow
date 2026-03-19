@@ -47,6 +47,12 @@ pub struct Config {
     /// "local" or "groq"
     #[serde(default = "default_provider")]
     pub provider: String,
+    #[serde(default = "default_tts_provider")]
+    pub tts_provider: String,
+    #[serde(default = "default_tts_model")]
+    pub tts_model: String,
+    #[serde(default)]
+    pub tts_voice_path: String,
     /// Groq API key (env var GROQ_API_KEY takes precedence)
     #[serde(default)]
     pub groq_api_key: String,
@@ -69,6 +75,12 @@ pub struct Config {
 
 fn default_provider() -> String {
     "local".into()
+}
+fn default_tts_provider() -> String {
+    "system".into()
+}
+fn default_tts_model() -> String {
+    "microsoft/VibeVoice-Realtime-0.5B".into()
 }
 fn default_groq_model() -> String {
     "whisper-large-v3-turbo".into()
@@ -96,6 +108,9 @@ impl Default for Config {
             model_path: None,
             model_preset: None,
             provider: default_provider(),
+            tts_provider: default_tts_provider(),
+            tts_model: default_tts_model(),
+            tts_voice_path: String::new(),
             groq_api_key: String::new(),
             groq_model: default_groq_model(),
             groq_language: String::new(),

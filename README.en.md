@@ -165,7 +165,7 @@ Go to **System Settings → Privacy & Security** and add `Open Flow.app` to each
 
 **Build from source** ([Rust](https://rustup.rs/)): `git clone https://github.com/jqlong17/open-flow.git && cd open-flow && cargo build --release`
 
-**Build .app locally**: `./scripts/build-app.sh` → builds `dist/Open Flow.app` and installs `/Applications/Open Flow.app`
+**Build .app locally**: `./scripts/build-app.sh` → builds `dist/Open Flow.app` and installs `/Applications/Open Flow.app` (set `OPEN_FLOW_SIGN_IDENTITY` to keep a stable signing identity)
 
 ---
 
