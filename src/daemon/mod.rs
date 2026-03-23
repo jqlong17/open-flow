@@ -180,6 +180,7 @@ impl Daemon {
         // ── 就绪提示 ──────────────────────────────────────────────────
         println!();
         println!("✅ Open Flow 已就绪");
+        println!("   输入设备: {}", audio_info.device_name);
         println!(
             "   音频设备: {}Hz / {} 通道",
             audio_info.sample_rate, audio_info.channels
@@ -469,12 +470,9 @@ impl Daemon {
         self.draft_live_cursor.store(0, Ordering::SeqCst);
         self.draft_live_inflight.store(false, Ordering::SeqCst);
         *self.draft_live_last_tick.lock().unwrap() = std::time::Instant::now();
-        *self.draft_live_text.lock().unwrap() = String::new();
-
         if self.draft_mode_active.load(Ordering::SeqCst) {
             if let Some(ref tx) = self.draft_event_tx {
                 let _ = tx.try_send(DraftPanelEvent::Show);
-                let _ = tx.try_send(DraftPanelEvent::Clear);
             }
         }
         println!("[Daemon] start_recording state_updated");

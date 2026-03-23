@@ -46,6 +46,8 @@ pub struct Config {
     #[serde(default = "default_provider")]
     pub provider: String,
     #[serde(default)]
+    pub audio_input_device: String,
+    #[serde(default)]
     pub groq_api_key: String,
     #[serde(default = "default_groq_model")]
     pub groq_model: String,
@@ -88,6 +90,7 @@ impl Default for Config {
             model_path: None,
             model_preset: None,
             provider: default_provider(),
+            audio_input_device: String::new(),
             groq_api_key: String::new(),
             groq_model: default_groq_model(),
             groq_language: String::new(),

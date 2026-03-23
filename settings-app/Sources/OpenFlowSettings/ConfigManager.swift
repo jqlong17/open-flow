@@ -1,11 +1,13 @@
 import Foundation
 import Combine
 import AppKit
+import AVFoundation
 
 /// Manages reading/writing Open Flow's config.toml and daemon lifecycle
 class ConfigManager: ObservableObject {
     // Config fields
     @Published var provider: String = "local"
+    @Published var audioInputDevice: String = ""
     @Published var modelPreset: String = "quantized"
     @Published var groqApiKey: String = ""
     @Published var groqModel: String = "whisper-large-v3-turbo"
@@ -39,6 +41,7 @@ class ConfigManager: ObservableObject {
 
     // Log
     @Published var logContent: String = ""
+    @Published var availableAudioInputDevices: [String] = []
 
     static let groqModels = ["whisper-large-v3-turbo", "whisper-large-v3"]
     static let localModelPresets = ["quantized", "fp16"]
@@ -64,6 +67,7 @@ class ConfigManager: ObservableObject {
         try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
 
         load()
+        refreshAudioInputDevices()
         refreshStatus()
         refreshPermissions()
 
@@ -166,6 +170,7 @@ class ConfigManager: ObservableObject {
 
             switch key {
             case "provider": provider = value
+            case "audio_input_device": audioInputDevice = value
             case "model_preset": modelPreset = value.isEmpty ? "quantized" : value
             case "groq_api_key": groqApiKey = value
             case "groq_model": groqModel = value
@@ -191,6 +196,7 @@ class ConfigManager: ObservableObject {
 
         let ourValues: [(String, String)] = [
             ("provider", provider),
+            ("audio_input_device", audioInputDevice),
             ("model_preset", normalizedModelPreset),
             ("groq_api_key", groqApiKey),
             ("groq_model", groqModel),
@@ -232,6 +238,17 @@ class ConfigManager: ObservableObject {
                 self.lastError = "Failed to save config: \(error.localizedDescription)"
             }
         }
+    }
+
+    func refreshAudioInputDevices() {
+        #if os(macOS)
+        var names = AVCaptureDevice.devices(for: .audio).compactMap { $0.localizedName }
+        names.sort()
+        names = Array(NSOrderedSet(array: names)) as? [String] ?? names
+        DispatchQueue.main.async {
+            self.availableAudioInputDevices = names
+        }
+        #endif
     }
 
     private func parseTOMLLine(_ line: String) -> (String, String)? {

@@ -29,7 +29,7 @@ pub async fn run(
     } else {
         let audio_capture = AudioCapture::new().context("初始化音频采集器失败")?;
         let audio_info = audio_capture.get_info();
-        println!("音频设备: MacBook Pro麦克风");
+        println!("音频设备: {}", audio_info.device_name);
         println!(
             "  采样率: {}Hz, 通道: {}",
             audio_info.sample_rate, audio_info.channels

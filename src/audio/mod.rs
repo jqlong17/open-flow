@@ -13,6 +13,7 @@ use tracing::{error, info};
 /// 音频采集器
 pub struct AudioCapture {
     device: cpal::Device,
+    device_name: String,
     config: StreamConfig,
     sample_format: SampleFormat,
     sample_rate: u32,
@@ -41,23 +42,32 @@ impl AudioCapture {
 
         let host = cpal::default_host();
 
-        // 优先查找 MacBook Pro 麦克风
-        let device = host
-            .input_devices()
-            .ok()
-            .and_then(|mut devices| {
-                devices.find(|d| {
-                    d.name()
-                        .map(|name| name.contains("MacBook Pro"))
-                        .unwrap_or(false)
-                })
-            })
-            // 如果没找到 MacBook Pro 麦克风，使用默认设备
-            .or_else(|| host.default_input_device())
-            .context("未找到输入设备，请检查麦克风是否连接并已在系统设置中启用")?;
+        let config = crate::common::config::Config::load().unwrap_or_default();
+        let preferred_name = config.audio_input_device.trim();
+        let default_device_name = host.default_input_device().and_then(|d| d.name().ok());
 
-        // 获取设备名称
+        let device = if preferred_name.is_empty() {
+            host.default_input_device()
+        } else {
+            host.input_devices().ok().and_then(|mut devices| {
+                devices.find(|d| d.name().map(|name| name == preferred_name).unwrap_or(false))
+            })
+        }
+        .or_else(|| host.default_input_device())
+        .context("未找到输入设备，请检查麦克风是否连接并已在系统设置中启用")?;
+
         let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+        if !preferred_name.is_empty() && device_name != preferred_name {
+            info!(
+                "配置的音频输入设备 '{}' 不可用，已回退到默认设备 '{}'",
+                preferred_name, device_name
+            );
+        } else if preferred_name.is_empty() {
+            info!(
+                "未配置音频输入设备，使用系统默认输入设备 '{}' (default={:?})",
+                device_name, default_device_name
+            );
+        }
         info!("使用音频设备: {}", device_name);
 
         // 获取默认配置
@@ -79,6 +89,7 @@ impl AudioCapture {
 
         Ok(Self {
             device,
+            device_name,
             config,
             sample_format,
             sample_rate,
@@ -333,16 +344,30 @@ impl AudioCapture {
     /// 获取音频配置信息
     pub fn get_info(&self) -> AudioInfo {
         AudioInfo {
+            device_name: self.device_name.clone(),
             sample_rate: self.sample_rate,
             channels: self.channels,
             sample_format: format!("{:?}", self.sample_format),
         }
+    }
+
+    pub fn list_input_device_names() -> Vec<String> {
+        let host = cpal::default_host();
+        let mut names = host
+            .input_devices()
+            .ok()
+            .map(|devices| devices.filter_map(|d| d.name().ok()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        names.sort();
+        names.dedup();
+        names
     }
 }
 
 /// 音频信息
 #[derive(Debug, Clone)]
 pub struct AudioInfo {
+    pub device_name: String,
     pub sample_rate: u32,
     pub channels: u16,
     pub sample_format: String,

@@ -30,7 +30,9 @@ mod platform {
         window: id,
         text_view: id,
         _action_target: id,
-        visible: AtomicBool,
+        _window_delegate: id,
+        visible: Box<AtomicBool>,
+        close_requested: Box<AtomicBool>,
     }
 
     unsafe impl Send for DraftPanel {}
@@ -65,6 +67,25 @@ mod platform {
                 decl.register() as *const Class as usize
             } else {
                 class!(OpenFlowDraftTextView) as *const Class as usize
+            }
+        });
+        ptr as *const Class
+    }
+
+    fn draft_window_delegate_class() -> *const Class {
+        static CLASS: OnceLock<usize> = OnceLock::new();
+        let ptr = *CLASS.get_or_init(|| unsafe {
+            if let Some(mut decl) = ClassDecl::new("OpenFlowDraftWindowDelegate", class!(NSObject))
+            {
+                decl.add_ivar::<usize>("visiblePtr");
+                decl.add_ivar::<usize>("closeRequestedPtr");
+                decl.add_method(
+                    sel!(windowWillClose:),
+                    draft_window_will_close as extern "C" fn(&Object, Sel, id),
+                );
+                decl.register() as *const Class as usize
+            } else {
+                class!(OpenFlowDraftWindowDelegate) as *const Class as usize
             }
         });
         ptr as *const Class
@@ -124,6 +145,22 @@ mod platform {
             let text_view: id = *this.get_ivar("textView");
             if text_view != nil {
                 copy_all_text(text_view);
+            }
+        }
+    }
+
+    extern "C" fn draft_window_will_close(this: &Object, _cmd: Sel, _notification: id) {
+        unsafe {
+            let visible_ptr: usize = *this.get_ivar("visiblePtr");
+            if visible_ptr != 0 {
+                let visible = visible_ptr as *const AtomicBool;
+                (*visible).store(false, Ordering::SeqCst);
+            }
+
+            let close_requested_ptr: usize = *this.get_ivar("closeRequestedPtr");
+            if close_requested_ptr != 0 {
+                let close_requested = close_requested_ptr as *const AtomicBool;
+                (*close_requested).store(true, Ordering::SeqCst);
             }
         }
     }
@@ -188,6 +225,8 @@ mod platform {
     impl DraftPanel {
         pub fn new() -> Option<Self> {
             unsafe {
+                let visible = Box::new(AtomicBool::new(false));
+                let close_requested = Box::new(AtomicBool::new(false));
                 let screen: id = msg_send![class!(NSScreen), mainScreen];
                 let screen_frame: NSRect = msg_send![screen, frame];
                 let x = (screen_frame.size.width - PANEL_WIDTH) / 2.0;
@@ -212,6 +251,16 @@ mod platform {
                 let title = NSString::alloc(nil).init_str("录音草稿");
                 let _: () = msg_send![window, setTitle: title];
                 let _: () = msg_send![window, setReleasedWhenClosed: NO];
+
+                let delegate_class = draft_window_delegate_class();
+                let window_delegate: id = msg_send![delegate_class, new];
+                (&mut *window_delegate)
+                    .set_ivar("visiblePtr", (&*visible as *const AtomicBool) as usize);
+                (&mut *window_delegate).set_ivar(
+                    "closeRequestedPtr",
+                    (&*close_requested as *const AtomicBool) as usize,
+                );
+                let _: () = msg_send![window, setDelegate: window_delegate];
 
                 let content_view: id = msg_send![window, contentView];
                 let content_frame: NSRect = msg_send![content_view, bounds];
@@ -268,7 +317,9 @@ mod platform {
                     window,
                     text_view,
                     _action_target: action_target,
-                    visible: AtomicBool::new(false),
+                    _window_delegate: window_delegate,
+                    visible,
+                    close_requested,
                 })
             }
         }
@@ -276,6 +327,7 @@ mod platform {
         pub fn show(&self) {
             unsafe {
                 ensure_edit_shortcuts_menu();
+                self.close_requested.store(false, Ordering::SeqCst);
                 if !self.visible.swap(true, Ordering::SeqCst) {
                     let _: () = msg_send![self.window, makeKeyAndOrderFront: nil];
                 }
@@ -291,6 +343,10 @@ mod platform {
                     let _: () = msg_send![self.window, orderOut: nil];
                 }
             }
+        }
+
+        pub fn consume_close_requested(&self) -> bool {
+            self.close_requested.swap(false, Ordering::SeqCst)
         }
 
         pub fn is_key_window(&self) -> bool {
@@ -347,6 +403,10 @@ mod platform {
         pub fn show(&self) {}
 
         pub fn hide(&self) {}
+
+        pub fn consume_close_requested(&self) -> bool {
+            false
+        }
 
         pub fn is_key_window(&self) -> bool {
             false

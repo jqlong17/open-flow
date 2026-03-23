@@ -745,6 +745,15 @@ fn run_main_loop(
             }
         }
 
+        if draft_mode_active.load(Ordering::SeqCst)
+            && draft_panel.map(|panel| panel.consume_close_requested()).unwrap_or(false)
+        {
+            draft_mode_active.store(false, Ordering::SeqCst);
+            if let Some(t) = tray {
+                t.set_draft_menu_text("录音草稿");
+            }
+        }
+
         // 驱动平台事件循环：macOS NSRunLoop
         #[cfg(target_os = "macos")]
         pump_run_loop_100ms();

@@ -131,6 +131,32 @@ struct ContentView: View {
                     .pickerStyle(.radioGroup)
                 }
 
+                SettingsSection(title: "Audio Input", icon: "mic") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Picker("Input Source", selection: $config.audioInputDevice) {
+                            Text("System Default Input").tag("")
+                            ForEach(config.availableAudioInputDevices, id: \.self) { device in
+                                Text(device).tag(device)
+                            }
+                        }
+                        .pickerStyle(.menu)
+
+                        HStack {
+                            Text("Current Selection")
+                            Spacer()
+                            Text(config.audioInputDevice.isEmpty ? "System Default Input" : config.audioInputDevice)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+
+                        Text("Open Flow records from an input device. To capture meeting audio from your Mac, select a virtual loopback device such as BlackHole if you have one installed.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 // Chinese conversion
                 SettingsSection(title: "Text Processing", icon: "textformat.abc") {
                     Picker("Chinese Conversion", selection: $config.chineseConversion) {
@@ -355,6 +381,9 @@ struct ContentView: View {
             if newValue == "local" {
                 config.ensureSelectedLocalModelReady()
             }
+        }
+        .onChange(of: config.audioInputDevice) { _ in
+            config.save()
         }
         .onChange(of: config.modelPreset) { newValue in
             guard config.provider == "local" else { return }
