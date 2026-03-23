@@ -14,6 +14,7 @@ use crate::hotkey::{
 };
 use crate::text_injection::TextInjector;
 use crate::tray::{TrayHandle, TrayIconState};
+use open_flow::correction::TextCorrector;
 
 /// Daemon 事件类型
 #[derive(Debug)]
@@ -43,6 +44,7 @@ pub struct Daemon {
     draft_live_inflight: Arc<AtomicBool>,
     draft_live_last_tick: Mutex<std::time::Instant>,
     draft_live_text: Arc<Mutex<String>>,
+    text_corrector: Option<TextCorrector>,
 }
 
 const MAX_RECORDING_DURATION_SECS: u64 = 2 * 60 * 60;
@@ -60,6 +62,7 @@ impl Daemon {
         let audio_capture = AudioCapture::new().context("初始化音频采集器失败")?;
         let text_injector = TextInjector::new();
         let config = crate::common::config::Config::load().unwrap_or_default();
+        let text_corrector = TextCorrector::from_config(&config);
 
         Ok(Self {
             state: Arc::new(Mutex::new(RecordingState::default())),
@@ -81,6 +84,7 @@ impl Daemon {
             draft_live_inflight: Arc::new(AtomicBool::new(false)),
             draft_live_last_tick: Mutex::new(std::time::Instant::now()),
             draft_live_text: Arc::new(Mutex::new(String::new())),
+            text_corrector,
         })
     }
 
@@ -601,6 +605,7 @@ impl Daemon {
             }
 
             let final_text = self.draft_live_text.lock().unwrap().trim().to_string();
+            let final_text = self.maybe_correct_text(final_text).await;
             let transcription_id = self.transcription_count.fetch_add(1, Ordering::SeqCst) + 1;
             self.log_memory_checkpoint(
                 "after_transcribe",
@@ -644,7 +649,9 @@ impl Daemon {
             )),
         );
 
-        tx.send(DaemonEvent::TranscriptionComplete(result.text))
+        let corrected_text = self.maybe_correct_text(result.text).await;
+
+        tx.send(DaemonEvent::TranscriptionComplete(corrected_text))
             .await
             .ok();
 
@@ -744,6 +751,21 @@ impl Daemon {
             language,
             duration_ms: started_at.elapsed().as_millis() as u64,
         })
+    }
+
+    async fn maybe_correct_text(&self, text: String) -> String {
+        let Some(corrector) = &self.text_corrector else {
+            return text;
+        };
+
+        match corrector.correct(&text).await {
+            Ok(corrected) if !corrected.trim().is_empty() => corrected,
+            Ok(_) => text,
+            Err(err) => {
+                eprintln!("⚠️  文本纠错失败，已回退原始转写: {}", err);
+                text
+            }
+        }
     }
 
     fn log_memory_checkpoint(&self, checkpoint: &str, extra: Option<String>) {

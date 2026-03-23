@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var selectedTab = 0
     @State private var showSaveConfirmation = false
     @State private var showCopyConfirmation = false
+    @State private var showPersonalVocabularySheet = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -59,6 +60,9 @@ struct ContentView: View {
 
             // Bottom bar
             bottomBar
+        }
+        .sheet(isPresented: $showPersonalVocabularySheet) {
+            PersonalVocabularySheet(config: config)
         }
     }
 
@@ -131,29 +135,38 @@ struct ContentView: View {
                     .pickerStyle(.radioGroup)
                 }
 
-                SettingsSection(title: "Audio Input", icon: "mic") {
+                SettingsSection(title: "Personal Vocabulary", icon: "text.book.closed") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Picker("Input Source", selection: $config.audioInputDevice) {
-                            Text("System Default Input").tag("")
-                            ForEach(config.availableAudioInputDevices, id: \.self) { device in
-                                Text(device).tag(device)
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Cloud correction for obvious ASR mistakes")
+                                    .font(.callout)
+                                Text("Uses your personal vocabulary as a correction hint. It only rewrites clear recognition errors and should not summarize or change facts.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
+                            Spacer()
+                            Button("Configure") {
+                                showPersonalVocabularySheet = true
+                            }
+                            .buttonStyle(.borderedProminent)
                         }
-                        .pickerStyle(.menu)
 
                         HStack {
-                            Text("Current Selection")
+                            Text("Status")
                             Spacer()
-                            Text(config.audioInputDevice.isEmpty ? "System Default Input" : config.audioInputDevice)
+                            Text(config.correctionIsEnabled ? "Enabled" : "Disabled")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                                .foregroundStyle(config.correctionIsEnabled ? .green : .secondary)
                         }
 
-                        Text("Open Flow records from an input device. To capture meeting audio from your Mac, select a virtual loopback device such as BlackHole if you have one installed.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        HStack {
+                            Text("Model")
+                            Spacer()
+                            Text(config.normalizedCorrectionModel)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 
@@ -381,9 +394,6 @@ struct ContentView: View {
             if newValue == "local" {
                 config.ensureSelectedLocalModelReady()
             }
-        }
-        .onChange(of: config.audioInputDevice) { _ in
-            config.save()
         }
         .onChange(of: config.modelPreset) { newValue in
             guard config.provider == "local" else { return }
@@ -637,6 +647,94 @@ struct ContentView: View {
         }
     }
 
+}
+
+struct PersonalVocabularySheet: View {
+    @ObservedObject var config: ConfigManager
+    @Environment(\.dismiss) private var dismiss
+    @State private var enabled: Bool
+    @State private var model: String
+    @State private var apiKey: String
+    @State private var vocabulary: String
+
+    init(config: ConfigManager) {
+        self.config = config
+        _enabled = State(initialValue: config.correctionIsEnabled)
+        _model = State(initialValue: config.correctionModel)
+        _apiKey = State(initialValue: config.correctionApiKey)
+        _vocabulary = State(initialValue: config.personalVocabulary)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Personal Vocabulary")
+                        .font(.title3.bold())
+                    Text("One common term per line. These terms are sent as hints to the correction model.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            Toggle("Enable lightweight cloud correction", isOn: $enabled)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Model")
+                    .font(.subheadline.weight(.semibold))
+                TextField("glm-4.7-flash", text: $model)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("API Key")
+                    .font(.subheadline.weight(.semibold))
+                SecureField("zhipu api key", text: $apiKey)
+                    .textFieldStyle(.roundedBorder)
+                Text("Stored only in your local Open Flow config. Transcription text and vocabulary will be sent to BigModel when correction is enabled.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Common Terms")
+                    .font(.subheadline.weight(.semibold))
+                TextEditor(text: $vocabulary)
+                    .font(.system(.body, design: .monospaced))
+                    .scrollContentBackground(.hidden)
+                    .background(.quaternary.opacity(0.35))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .frame(minHeight: 220)
+                Text("Examples: Open Flow, SenseVoice, BlackHole, Groq, your teammates' names, project names.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+
+                Button("Save") {
+                    config.setCorrectionEnabled(enabled)
+                    config.correctionModel = model
+                    config.correctionApiKey = apiKey
+                    config.personalVocabulary = vocabulary
+                    config.save()
+                    config.savePersonalVocabulary()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 560, minHeight: 520)
+    }
 }
 
 struct SettingsSection<Content: View>: View {

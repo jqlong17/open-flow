@@ -51,6 +51,7 @@
 - 菜单栏托盘图标（灰/红/黄），录音时可选**浮动指示器**（光标旁「录音中…」「转写中…」）
 - 可配置热键（右 Command / Fn / F13）、触发模式（按一次开关 toggle / 按住录 hold）、**简繁转换**（简→繁 / 繁→简）
 - 可选本地 SenseVoice 或 **Groq Whisper** 云端识别；可切换模型预设（quantized / fp16）
+- 可选 **BigModel 轻量纠错**：支持个人词表，修正常见术语与明显 ASR 错误（需用户自行配置 API Key）
 - **macOS**：托盘菜单「偏好设置…」打开 **SwiftUI 设置界面**，图形化管理热键、Provider、模型、权限与日志
 - **macOS**：托盘菜单支持自动更新（后台下载，下载完成后点击重启应用更新）
 
@@ -77,6 +78,13 @@
 | **日志** | 查看 daemon 最近约 100 行日志 |
 
 窗口顶部显示 **daemon 状态**（运行中 PID、运行时间），并提供 **Start / Stop / Restart / Quit Open Flow** 等控制。权限项会显示是否已授权（绿色勾）或可点击跳转系统设置。修改后点击 **Save** 保存；部分项需重启 daemon 后生效。
+
+### Personal Vocabulary / BigModel 纠错
+
+- `General -> Personal Vocabulary -> Configure` 可开启轻量云纠错
+- 为避免泄露，仓库与发布包**不内置 API Key**，需用户自行生成并填写
+- BigModel API Key 申请地址：`https://bigmodel.cn/usercenter/proj-mgmt/apikeys`
+- 关闭该开关时，Open Flow 仅使用本地/Provider 转写结果，不会调用 BigModel
 
 ---
 

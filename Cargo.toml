@@ -1,6 +1,6 @@
 [package]
 name = "open-flow"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 authors = ["Open Flow Contributors"]
 description = "AI coding voice input daemon for macOS - macOS 全局语音输入工具"
@@ -51,7 +51,7 @@ rubato = "0.16"
 realfft = "3.4"
 
 # HTTP client (for model download)，用 rustls 避免 Linux 上依赖系统 OpenSSL
-reqwest = { version = "0.12", features = ["stream", "rustls-tls", "multipart"], default-features = false }
+reqwest = { version = "0.12", features = ["stream", "rustls-tls", "multipart", "json"], default-features = false }
 
 # Utils（放 [dependencies] 内，保证 Linux/macOS/Windows 都能用）
 uuid = { version = "1.6", features = ["v4"] }

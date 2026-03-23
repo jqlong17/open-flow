@@ -46,7 +46,11 @@ pub struct Config {
     #[serde(default = "default_provider")]
     pub provider: String,
     #[serde(default)]
-    pub audio_input_device: String,
+    pub correction_enabled: String,
+    #[serde(default = "default_correction_model")]
+    pub correction_model: String,
+    #[serde(default)]
+    pub correction_api_key: String,
     #[serde(default)]
     pub groq_api_key: String,
     #[serde(default = "default_groq_model")]
@@ -66,6 +70,9 @@ fn default_provider() -> String {
 }
 fn default_groq_model() -> String {
     "whisper-large-v3-turbo".into()
+}
+fn default_correction_model() -> String {
+    "GLM-4-Flash-250414".into()
 }
 fn default_hotkey() -> String {
     "right_cmd".into()
@@ -90,7 +97,9 @@ impl Default for Config {
             model_path: None,
             model_preset: None,
             provider: default_provider(),
-            audio_input_device: String::new(),
+            correction_enabled: String::new(),
+            correction_model: default_correction_model(),
+            correction_api_key: String::new(),
             groq_api_key: String::new(),
             groq_model: default_groq_model(),
             groq_language: String::new(),
@@ -104,6 +113,27 @@ impl Default for Config {
 impl Config {
     pub fn resolved_groq_api_key(&self) -> String {
         std::env::var("GROQ_API_KEY").unwrap_or_else(|_| self.groq_api_key.clone())
+    }
+
+    pub fn correction_enabled(&self) -> bool {
+        matches!(
+            self.correction_enabled.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on" | "enabled"
+        )
+    }
+
+    pub fn resolved_correction_api_key(&self) -> String {
+        std::env::var("OPEN_FLOW_CORRECTION_API_KEY")
+            .unwrap_or_else(|_| self.correction_api_key.clone())
+    }
+
+    pub fn resolved_correction_model(&self) -> String {
+        let model = self.correction_model.trim();
+        if model.is_empty() {
+            default_correction_model()
+        } else {
+            model.to_string()
+        }
     }
 
     pub fn load() -> Result<Self> {
@@ -166,6 +196,10 @@ impl Config {
         fs::create_dir_all(data_dir)?;
 
         Ok(data_dir.to_path_buf())
+    }
+
+    pub fn personal_vocabulary_path() -> Result<PathBuf> {
+        Ok(Self::data_dir()?.join("personal_vocabulary.txt"))
     }
 
     /// 设置模型预设并写回 config

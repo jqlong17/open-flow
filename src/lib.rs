@@ -3,6 +3,7 @@
 pub mod asr;
 pub mod audio;
 pub mod common;
+pub mod correction;
 pub mod draft_panel;
 pub mod hotkey;
 pub mod overlay;

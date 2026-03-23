@@ -1,13 +1,14 @@
 import Foundation
 import Combine
 import AppKit
-import AVFoundation
 
 /// Manages reading/writing Open Flow's config.toml and daemon lifecycle
 class ConfigManager: ObservableObject {
     // Config fields
     @Published var provider: String = "local"
-    @Published var audioInputDevice: String = ""
+    @Published var correctionEnabled: String = ""
+    @Published var correctionModel: String = "GLM-4-Flash-250414"
+    @Published var correctionApiKey: String = ""
     @Published var modelPreset: String = "quantized"
     @Published var groqApiKey: String = ""
     @Published var groqModel: String = "whisper-large-v3-turbo"
@@ -41,7 +42,7 @@ class ConfigManager: ObservableObject {
 
     // Log
     @Published var logContent: String = ""
-    @Published var availableAudioInputDevices: [String] = []
+    @Published var personalVocabulary: String = ""
 
     static let groqModels = ["whisper-large-v3-turbo", "whisper-large-v3"]
     static let localModelPresets = ["quantized", "fp16"]
@@ -67,7 +68,6 @@ class ConfigManager: ObservableObject {
         try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
 
         load()
-        refreshAudioInputDevices()
         refreshStatus()
         refreshPermissions()
 
@@ -170,7 +170,9 @@ class ConfigManager: ObservableObject {
 
             switch key {
             case "provider": provider = value
-            case "audio_input_device": audioInputDevice = value
+            case "correction_enabled": correctionEnabled = value
+            case "correction_model": correctionModel = value.isEmpty ? "GLM-4-Flash-250414" : value
+            case "correction_api_key": correctionApiKey = value
             case "model_preset": modelPreset = value.isEmpty ? "quantized" : value
             case "groq_api_key": groqApiKey = value
             case "groq_model": groqModel = value
@@ -184,6 +186,7 @@ class ConfigManager: ObservableObject {
         }
 
         checkModelReady()
+        loadPersonalVocabulary()
     }
 
     func save() {
@@ -196,7 +199,9 @@ class ConfigManager: ObservableObject {
 
         let ourValues: [(String, String)] = [
             ("provider", provider),
-            ("audio_input_device", audioInputDevice),
+            ("correction_enabled", correctionEnabled),
+            ("correction_model", normalizedCorrectionModel),
+            ("correction_api_key", correctionApiKey),
             ("model_preset", normalizedModelPreset),
             ("groq_api_key", groqApiKey),
             ("groq_model", groqModel),
@@ -240,15 +245,40 @@ class ConfigManager: ObservableObject {
         }
     }
 
-    func refreshAudioInputDevices() {
-        #if os(macOS)
-        var names = AVCaptureDevice.devices(for: .audio).compactMap { $0.localizedName }
-        names.sort()
-        names = Array(NSOrderedSet(array: names)) as? [String] ?? names
-        DispatchQueue.main.async {
-            self.availableAudioInputDevices = names
+    var normalizedCorrectionModel: String {
+        let trimmed = correctionModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "glm-4.7-flash" : trimmed
+    }
+
+    var correctionIsEnabled: Bool {
+        let value = correctionEnabled.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return value == "true" || value == "1" || value == "yes" || value == "on" || value == "enabled"
+    }
+
+    func setCorrectionEnabled(_ enabled: Bool) {
+        correctionEnabled = enabled ? "true" : "false"
+    }
+
+    var personalVocabularyFileURL: URL {
+        dataDir.appendingPathComponent("personal_vocabulary.txt")
+    }
+
+    func loadPersonalVocabulary() {
+        guard let content = try? String(contentsOf: personalVocabularyFileURL, encoding: .utf8) else {
+            personalVocabulary = ""
+            return
         }
-        #endif
+        personalVocabulary = content
+    }
+
+    func savePersonalVocabulary() {
+        do {
+            try personalVocabulary.write(to: personalVocabularyFileURL, atomically: true, encoding: .utf8)
+        } catch {
+            DispatchQueue.main.async {
+                self.lastError = "Failed to save personal vocabulary: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func parseTOMLLine(_ line: String) -> (String, String)? {

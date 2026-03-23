@@ -18,15 +18,7 @@ impl TextInjector {
     }
 
     pub async fn inject(&self, text: &str) -> Result<()> {
-        // 1. 如果配置了中文转换则应用
         let text = chinese_convert::convert_chinese(text, &self.chinese_conversion);
-
-        // 2. 同时写入剪贴板作为备份
-        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-            let _ = clipboard.set_text(&text);
-        }
-
-        // 3. 输入文本（平台特定）
         Self::type_text(&text).await
     }
 
@@ -97,14 +89,20 @@ impl TextInjector {
     }
 
     #[cfg(target_os = "linux")]
-    async fn type_text(_text: &str) -> Result<()> {
+    async fn type_text(text: &str) -> Result<()> {
+        let previous_clipboard_text = backup_clipboard_text();
+        set_clipboard_text(text);
+
         // 优先尝试 xdotool（X11 / XWayland），其次 wl-paste+wtype（纯 Wayland）
         let xdotool = std::process::Command::new("xdotool")
             .args(["key", "--clearmodifiers", "ctrl+v"])
             .output();
 
         match xdotool {
-            Ok(out) if out.status.success() => return Ok(()),
+            Ok(out) if out.status.success() => {
+                restore_clipboard_text(previous_clipboard_text);
+                return Ok(());
+            }
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 tracing::warn!("xdotool 执行失败: {}", stderr);
@@ -123,8 +121,12 @@ impl TextInjector {
             .output();
 
         match wtype {
-            Ok(out) if out.status.success() => Ok(()),
+            Ok(out) if out.status.success() => {
+                restore_clipboard_text(previous_clipboard_text);
+                Ok(())
+            }
             Ok(out) => {
+                restore_clipboard_text(previous_clipboard_text);
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 anyhow::bail!(
                     "xdotool 和 wtype 均执行失败。\n\
@@ -134,20 +136,45 @@ impl TextInjector {
                     stderr
                 )
             }
-            Err(_) => anyhow::bail!(
-                "未找到 xdotool 或 wtype，无法模拟粘贴。\n\
-                 X11 用户：sudo apt install xdotool\n\
-                 Wayland 用户：sudo apt install wtype"
-            ),
+            Err(_) => {
+                restore_clipboard_text(previous_clipboard_text);
+                anyhow::bail!(
+                    "未找到 xdotool 或 wtype，无法模拟粘贴。\n\
+                     X11 用户：sudo apt install xdotool\n\
+                     Wayland 用户：sudo apt install wtype"
+                )
+            }
         }
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    async fn type_text(_text: &str) -> Result<()> {
+    async fn type_text(text: &str) -> Result<()> {
+        set_clipboard_text(text);
         tracing::warn!(
             "当前平台不支持自动粘贴，转写结果已写入剪贴板，请手动粘贴（Ctrl+V / Cmd+V）。"
         );
         Ok(())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn backup_clipboard_text() -> Option<String> {
+    arboard::Clipboard::new()
+        .ok()
+        .and_then(|mut clipboard| clipboard.get_text().ok())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_clipboard_text(text: &str) {
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        let _ = clipboard.set_text(text);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn restore_clipboard_text(previous: Option<String>) {
+    if let Some(text) = previous {
+        set_clipboard_text(&text);
     }
 }
 
