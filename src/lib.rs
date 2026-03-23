@@ -6,6 +6,7 @@ pub mod common;
 pub mod correction;
 pub mod draft_panel;
 pub mod hotkey;
+pub mod model_store;
 pub mod overlay;
 pub mod settings_window;
 pub mod text_injection;

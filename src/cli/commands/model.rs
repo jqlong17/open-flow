@@ -1,8 +1,8 @@
 //! 模型预设切换：quantized（默认）| fp16
 
-use crate::cli::commands::setup;
 use crate::common::config::{Config, ModelPreset};
 use anyhow::Result;
+use open_flow::model_store;
 
 /// 切换到指定预设并可选触发下载
 pub async fn use_preset(preset: ModelPreset, download: bool) -> Result<()> {
@@ -10,10 +10,10 @@ pub async fn use_preset(preset: ModelPreset, download: bool) -> Result<()> {
     config.set_model_preset(preset)?;
     println!("✅ 当前模型预设: {}", preset.as_str());
 
-    let default_dir = setup::default_model_dir(preset)?;
-    if setup::model_is_ready(&default_dir) {
+    let default_dir = model_store::default_model_dir(preset)?;
+    if model_store::model_is_ready(&default_dir) {
         println!("   路径: {}（已就绪）", default_dir.display());
-        setup::save_model_to_config(&default_dir)?;
+        model_store::save_model_to_config(&default_dir)?;
         if !download {
             return Ok(());
         }
@@ -22,8 +22,8 @@ pub async fn use_preset(preset: ModelPreset, download: bool) -> Result<()> {
         println!("   路径: {}（未就绪，将自动下载）", default_dir.display());
     }
 
-    setup::download_all(None, preset, false).await?;
-    setup::save_model_to_config(&default_dir)?;
+    model_store::download_all(None, preset, false).await?;
+    model_store::save_model_to_config(&default_dir)?;
     println!("✅ 模型已就绪，可运行: open-flow start");
     Ok(())
 }

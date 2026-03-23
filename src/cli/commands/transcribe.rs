@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use open_flow::model_store;
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::info;
@@ -14,7 +15,7 @@ pub async fn run(
 ) -> Result<()> {
     info!("开始单次转写");
 
-    let model_path = crate::cli::commands::setup::ensure_model_ready(model_override).await?;
+    let model_path = model_store::ensure_model_ready(model_override).await?;
 
     println!("🎙️  语音转写");
     println!();

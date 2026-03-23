@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use open_flow::model_store;
 use std::fs;
 #[cfg(target_os = "macos")]
 use std::io::Write;
@@ -435,7 +436,7 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
 
     // ── 模型就绪（首次自动下载，异步，用 block_on 执行）──────────────
     let model_path = rt_temp
-        .block_on(crate::cli::commands::setup::ensure_model_ready(model))
+        .block_on(model_store::ensure_model_ready(model))
         .map_err(|e| {
             eprintln!("❌ 模型准备失败: {}", e);
             e
@@ -746,7 +747,9 @@ fn run_main_loop(
         }
 
         if draft_mode_active.load(Ordering::SeqCst)
-            && draft_panel.map(|panel| panel.consume_close_requested()).unwrap_or(false)
+            && draft_panel
+                .map(|panel| panel.consume_close_requested())
+                .unwrap_or(false)
         {
             draft_mode_active.store(false, Ordering::SeqCst);
             if let Some(t) = tray {
