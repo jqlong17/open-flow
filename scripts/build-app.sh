@@ -44,11 +44,6 @@ if [[ -f "$REPO_ROOT/assets/AppIcon.icns" ]]; then
   cp "$REPO_ROOT/assets/AppIcon.icns" "$DIST_APP_DIR/Contents/Resources/"
 fi
 
-if [[ -f "$REPO_ROOT/scripts/vibevoice_tts.py" ]]; then
-  cp "$REPO_ROOT/scripts/vibevoice_tts.py" "$DIST_APP_DIR/Contents/Resources/vibevoice_tts.py"
-  chmod +x "$DIST_APP_DIR/Contents/Resources/vibevoice_tts.py"
-fi
-
 # Info.plist（版本号从 Cargo.toml 读取）
 VERSION=$(grep '^version' "$REPO_ROOT/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/' | tr -d ' ')
 cat > "$DIST_APP_DIR/Contents/Info.plist" << EOF

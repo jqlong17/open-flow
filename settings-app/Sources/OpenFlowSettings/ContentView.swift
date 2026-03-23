@@ -303,121 +303,6 @@ struct ContentView: View {
                     }
                 }
 
-                SettingsSection(title: "Text-to-Speech Provider", icon: "waveform") {
-                    Picker("TTS Provider", selection: $config.ttsProvider) {
-                        Text("System (macOS)").tag("system")
-                        Text("Local Model (Python + VibeVoice)").tag("local_model")
-                    }
-                    .pickerStyle(.segmented)
-
-                    if config.normalizedTtsProvider == "system" {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Image(systemName: "checkmark.shield.fill")
-                                    .foregroundStyle(.green)
-                                Text("Uses macOS built-in speech engine with local conversion to mp3.")
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Text("Dependency: ffmpeg is still required for mp3 export.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Text("Model")
-                                TextField("microsoft/VibeVoice-Realtime-0.5B", text: $config.ttsModel)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-
-                            HStack {
-                                Text("Voice Embedding (.pt)")
-                                TextField("Auto-detect if empty", text: $config.ttsVoicePath)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-
-                            Text("Requires Python runtime with torch + vibevoice. If voice path is empty, app auto-searches .pt voice files.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Label(
-                                config.ttsDepsReady ? "Ready" : "Missing dependencies",
-                                systemImage: config.ttsDepsReady ? "checkmark.circle.fill" : "xmark.circle.fill"
-                            )
-                            .foregroundStyle(config.ttsDepsReady ? .green : .orange)
-
-                            Spacer()
-
-                            if config.ttsDepsChecking {
-                                ProgressView()
-                                    .scaleEffect(0.75)
-                            }
-
-                            if config.ttsInstallInProgress {
-                                ProgressView(value: config.ttsInstallProgress)
-                                    .frame(width: 120)
-                                    .progressViewStyle(.linear)
-                            }
-
-                            Button("Check Now") {
-                                config.refreshTtsDependencies()
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-
-                            if config.ttsCanAutoInstall && !config.ttsDepsReady {
-                                Button(config.ttsInstallInProgress ? "Installing..." : "Download") {
-                                    config.installTtsDependencies()
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-                                .disabled(config.ttsInstallInProgress)
-                            }
-                        }
-
-                        Text(config.ttsDepsLastResult)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        if config.ttsInstallInProgress || !config.ttsInstallStatus.isEmpty {
-                            Text(config.ttsInstallStatus)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        if config.normalizedTtsProvider == "local_model" {
-                            ttsDependencyRow("python3", ok: config.ttsHasPython)
-                            ttsDependencyRow("ffmpeg", ok: config.ttsHasFfmpeg)
-                            ttsDependencyRow("Bundled script", ok: config.ttsHasBundledScript)
-                            ttsDependencyRow("torch + vibevoice", ok: config.ttsHasVibevoiceRuntime)
-                            ttsDependencyRow("voice embedding (.pt)", ok: config.ttsHasVoiceFile)
-                        } else {
-                            ttsDependencyRow("say", ok: config.ttsHasSay)
-                            ttsDependencyRow("ffmpeg", ok: config.ttsHasFfmpeg)
-                        }
-
-                        if !config.ttsInstallOutput.isEmpty {
-                            ScrollView {
-                                Text(config.ttsInstallOutput)
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .textSelection(.enabled)
-                            }
-                            .frame(maxHeight: 130)
-                            .background(.quaternary.opacity(0.3))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                        }
-                    }
-                }
-
                 if config.provider == "groq" {
                     SettingsSection(title: "Groq API Settings", icon: "cloud") {
                         VStack(alignment: .leading, spacing: 10) {
@@ -476,20 +361,6 @@ struct ContentView: View {
             config.selectLocalModelPreset(newValue)
             if !config.modelReady {
                 config.downloadModel()
-            }
-        }
-        .onChange(of: config.ttsProvider) { _ in
-            config.save()
-            config.refreshTtsDependencies()
-        }
-        .onChange(of: config.ttsModel) { _ in
-            if config.normalizedTtsProvider == "local_model" {
-                config.save()
-            }
-        }
-        .onChange(of: config.ttsVoicePath) { _ in
-            if config.normalizedTtsProvider == "local_model" {
-                config.save()
             }
         }
     }
@@ -564,67 +435,6 @@ struct ContentView: View {
                         Text(config.modelDownloadStatus.isEmpty ? "Downloading model..." : config.modelDownloadStatus)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                    }
-                }
-
-                SettingsSection(title: "TTS Model", icon: "waveform.path") {
-                    HStack {
-                        Text("Provider")
-                        Spacer()
-                        Text(config.normalizedTtsProvider == "local_model" ? "Local Model" : "System")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if config.normalizedTtsProvider == "local_model" {
-                        HStack {
-                            Text("Model")
-                            Spacer()
-                            Text(config.normalizedTtsModel)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-
-                        HStack {
-                            Text("Model URL")
-                            Spacer()
-                            if let url = URL(string: config.ttsModelURL), config.ttsModelURL.hasPrefix("http") {
-                                Link(config.ttsModelURL, destination: url)
-                                    .font(.caption)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            } else {
-                                Text(config.ttsModelURL)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                        }
-
-                        HStack {
-                            Text("Voice Path")
-                            Spacer()
-                            Text(config.ttsVoicePath.isEmpty ? "Auto-detect" : config.ttsVoicePath)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                    } else {
-                        Text("System mode uses macOS built-in TTS engine.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    HStack {
-                        Text("Dependency Health")
-                        Spacer()
-                        Text(config.ttsDepsReady ? "Ready" : "Missing")
-                            .font(.caption)
-                            .foregroundStyle(config.ttsDepsReady ? .green : .orange)
                     }
                 }
 
@@ -798,15 +608,6 @@ struct ContentView: View {
         }
     }
 
-    private func ttsDependencyRow(_ name: String, ok: Bool) -> some View {
-        HStack {
-            Text(name)
-            Spacer()
-            Label(ok ? "OK" : "Missing", systemImage: ok ? "checkmark.circle.fill" : "xmark.circle")
-                .font(.caption)
-                .foregroundStyle(ok ? .green : .orange)
-        }
-    }
 }
 
 struct SettingsSection<Content: View>: View {

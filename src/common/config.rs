@@ -41,46 +41,26 @@ impl std::str::FromStr for ModelPreset {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub model_path: Option<PathBuf>,
-    /// 模型预设：quantized（默认）| fp16。序列化为 config 中的字符串。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_preset: Option<String>,
-    /// "local" or "groq"
     #[serde(default = "default_provider")]
     pub provider: String,
-    #[serde(default = "default_tts_provider")]
-    pub tts_provider: String,
-    #[serde(default = "default_tts_model")]
-    pub tts_model: String,
-    #[serde(default)]
-    pub tts_voice_path: String,
-    /// Groq API key (env var GROQ_API_KEY takes precedence)
     #[serde(default)]
     pub groq_api_key: String,
-    /// Groq Whisper model name
     #[serde(default = "default_groq_model")]
     pub groq_model: String,
-    /// Optional language hint for Groq (e.g. "en", "zh"). Empty = auto-detect.
     #[serde(default)]
     pub groq_language: String,
-    /// Hotkey identifier: "right_cmd", "fn", "f13", etc.
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
-    /// Trigger mode: "toggle" or "hold"
     #[serde(default = "default_trigger_mode")]
     pub trigger_mode: String,
-    /// Convert simplified Chinese to traditional: "none", "s2t" (simplified->traditional), "t2s" (traditional->simplified)
     #[serde(default)]
     pub chinese_conversion: String,
 }
 
 fn default_provider() -> String {
     "local".into()
-}
-fn default_tts_provider() -> String {
-    "system".into()
-}
-fn default_tts_model() -> String {
-    "microsoft/VibeVoice-Realtime-0.5B".into()
 }
 fn default_groq_model() -> String {
     "whisper-large-v3-turbo".into()
@@ -108,9 +88,6 @@ impl Default for Config {
             model_path: None,
             model_preset: None,
             provider: default_provider(),
-            tts_provider: default_tts_provider(),
-            tts_model: default_tts_model(),
-            tts_voice_path: String::new(),
             groq_api_key: String::new(),
             groq_model: default_groq_model(),
             groq_language: String::new(),
@@ -122,7 +99,6 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Returns Groq API key: env var GROQ_API_KEY takes precedence over config file.
     pub fn resolved_groq_api_key(&self) -> String {
         std::env::var("GROQ_API_KEY").unwrap_or_else(|_| self.groq_api_key.clone())
     }

@@ -9,4 +9,3 @@ pub mod overlay;
 pub mod settings_window;
 pub mod text_injection;
 pub mod tray;
-pub mod tts;
