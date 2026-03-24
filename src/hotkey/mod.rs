@@ -52,7 +52,55 @@ impl HotkeyListener {
         };
         use std::sync::atomic::{AtomicBool, AtomicU64};
 
-        let is_fn_key = hotkey == "fn";
+        #[derive(Clone, Copy)]
+        enum MacHotkey {
+            Fn,
+            Modifier {
+                label: &'static str,
+                log_key: &'static str,
+                keycode: u16,
+                flag: CGEventFlags,
+            },
+            Key {
+                label: &'static str,
+                log_key: &'static str,
+                keycode: u16,
+            },
+        }
+
+        let hotkey_spec = match hotkey {
+            "fn" => MacHotkey::Fn,
+            "right_option" => MacHotkey::Modifier {
+                label: "右侧 Option",
+                log_key: "right_option",
+                keycode: KeyCode::RIGHT_OPTION,
+                flag: CGEventFlags::CGEventFlagAlternate,
+            },
+            "right_control" => MacHotkey::Modifier {
+                label: "右侧 Control",
+                log_key: "right_control",
+                keycode: KeyCode::RIGHT_CONTROL,
+                flag: CGEventFlags::CGEventFlagControl,
+            },
+            "right_shift" => MacHotkey::Modifier {
+                label: "右侧 Shift",
+                log_key: "right_shift",
+                keycode: KeyCode::RIGHT_SHIFT,
+                flag: CGEventFlags::CGEventFlagShift,
+            },
+            "f13" => MacHotkey::Key {
+                label: "F13",
+                log_key: "f13",
+                keycode: KeyCode::F13,
+            },
+            _ => MacHotkey::Modifier {
+                label: "右侧 Command",
+                log_key: "right_cmd",
+                keycode: KeyCode::RIGHT_COMMAND,
+                flag: CGEventFlags::CGEventFlagCommand,
+            },
+        };
+
         let pressed = Arc::new(AtomicBool::new(false));
         let pressed_clone = pressed.clone();
         let press_count = Arc::new(AtomicU64::new(0));
@@ -60,7 +108,10 @@ impl HotkeyListener {
         let pc = press_count.clone();
         let rc = release_count.clone();
 
-        let key_name = if is_fn_key { "Fn" } else { "右侧 Command" };
+        let key_name = match hotkey_spec {
+            MacHotkey::Fn => "Fn",
+            MacHotkey::Modifier { label, .. } | MacHotkey::Key { label, .. } => label,
+        };
         println!("⌨️  热键监听器已启动（CGEventTap，热键: {}）", key_name);
 
         let current = CFRunLoop::get_current();
@@ -68,75 +119,139 @@ impl HotkeyListener {
             CGEventTapLocation::HID,
             core_graphics::event::CGEventTapPlacement::HeadInsertEventTap,
             CGEventTapOptions::ListenOnly,
-            vec![CGEventType::FlagsChanged],
+            vec![
+                CGEventType::FlagsChanged,
+                CGEventType::KeyDown,
+                CGEventType::KeyUp,
+            ],
             move |_proxy, event_type, event| {
-                if event_type as u32 != CGEventType::FlagsChanged as u32 {
-                    return Some(event.clone());
-                }
+                let keycode =
+                    event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
 
-                if is_fn_key {
-                    // Fn key: detect via secondary Fn flag (0x800000)
-                    let flags = event.get_flags();
-                    let fn_down = (flags.bits() & 0x800000) != 0;
-
-                    if fn_down {
-                        let was = pressed_clone.swap(true, Ordering::SeqCst);
-                        if !was {
-                            let n = pc.fetch_add(1, Ordering::SeqCst) + 1;
-                            println!("[Hotkey] raw_event press={} key=fn", n);
-                            if let Err(e) = sender.send(HotkeyEvent::Pressed) {
-                                eprintln!("[Hotkey] send_failed key=fn event=Pressed error={}", e);
-                                error!("发送热键事件失败: {}", e);
-                            }
+                match hotkey_spec {
+                    MacHotkey::Fn => {
+                        if event_type as u32 != CGEventType::FlagsChanged as u32 {
+                            return Some(event.clone());
                         }
-                    } else if pressed_clone.load(Ordering::SeqCst) {
-                        pressed_clone.store(false, Ordering::SeqCst);
-                        let n = rc.fetch_add(1, Ordering::SeqCst) + 1;
-                        println!("[Hotkey] raw_event release={} key=fn", n);
-                        if let Err(e) = sender.send(HotkeyEvent::Released) {
-                            eprintln!("[Hotkey] send_failed key=fn event=Released error={}", e);
-                            error!("发送热键事件失败: {}", e);
+
+                        let flags = event.get_flags();
+                        let fn_down =
+                            (flags.bits() & CGEventFlags::CGEventFlagSecondaryFn.bits()) != 0;
+
+                        if fn_down {
+                            let was = pressed_clone.swap(true, Ordering::SeqCst);
+                            if !was {
+                                let n = pc.fetch_add(1, Ordering::SeqCst) + 1;
+                                println!("[Hotkey] raw_event press={} key=fn", n);
+                                if let Err(e) = sender.send(HotkeyEvent::Pressed) {
+                                    eprintln!(
+                                        "[Hotkey] send_failed key=fn event=Pressed error={}",
+                                        e
+                                    );
+                                    error!("发送热键事件失败: {}", e);
+                                }
+                            }
+                        } else {
+                            let was = pressed_clone.swap(false, Ordering::SeqCst);
+                            if was {
+                                let n = rc.fetch_add(1, Ordering::SeqCst) + 1;
+                                println!("[Hotkey] raw_event release={} key=fn", n);
+                                if let Err(e) = sender.send(HotkeyEvent::Released) {
+                                    eprintln!(
+                                        "[Hotkey] send_failed key=fn event=Released error={}",
+                                        e
+                                    );
+                                    error!("发送热键事件失败: {}", e);
+                                }
+                            }
                         }
                     }
-                } else {
-                    let keycode =
-                        event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
-                    if keycode != KeyCode::RIGHT_COMMAND {
-                        return Some(event.clone());
-                    }
+                    MacHotkey::Modifier {
+                        log_key,
+                        keycode: expected_keycode,
+                        flag,
+                        ..
+                    } => {
+                        if event_type as u32 != CGEventType::FlagsChanged as u32
+                            || keycode != expected_keycode
+                        {
+                            return Some(event.clone());
+                        }
 
-                    let is_pressed = event.get_flags().contains(CGEventFlags::CGEventFlagCommand);
-                    if is_pressed {
-                        let was = pressed_clone.swap(true, Ordering::SeqCst);
-                        if !was {
-                            let n = pc.fetch_add(1, Ordering::SeqCst) + 1;
-                            println!(
-                                "[Hotkey] raw_event press={} key=right_cmd was_pressed={}",
-                                n, was
-                            );
-                            if let Err(e) = sender.send(HotkeyEvent::Pressed) {
-                                eprintln!(
-                                    "[Hotkey] send_failed key=right_cmd event=Pressed error={}",
-                                    e
-                                );
-                                error!("发送热键事件失败: {}", e);
+                        let is_pressed = event.get_flags().contains(flag);
+                        if is_pressed {
+                            let was = pressed_clone.swap(true, Ordering::SeqCst);
+                            if !was {
+                                let n = pc.fetch_add(1, Ordering::SeqCst) + 1;
+                                println!("[Hotkey] raw_event press={} key={}", n, log_key);
+                                if let Err(e) = sender.send(HotkeyEvent::Pressed) {
+                                    eprintln!(
+                                        "[Hotkey] send_failed key={} event=Pressed error={}",
+                                        log_key, e
+                                    );
+                                    error!("发送热键事件失败: {}", e);
+                                }
+                            }
+                        } else {
+                            let was = pressed_clone.swap(false, Ordering::SeqCst);
+                            if was {
+                                let n = rc.fetch_add(1, Ordering::SeqCst) + 1;
+                                println!("[Hotkey] raw_event release={} key={}", n, log_key);
+                                if let Err(e) = sender.send(HotkeyEvent::Released) {
+                                    eprintln!(
+                                        "[Hotkey] send_failed key={} event=Released error={}",
+                                        log_key, e
+                                    );
+                                    error!("发送热键事件失败: {}", e);
+                                }
                             }
                         }
-                    } else {
-                        let was = pressed_clone.swap(false, Ordering::SeqCst);
-                        if was {
-                            let n = rc.fetch_add(1, Ordering::SeqCst) + 1;
-                            println!(
-                                "[Hotkey] raw_event release={} key=right_cmd was_pressed={}",
-                                n, was
-                            );
-                            if let Err(e) = sender.send(HotkeyEvent::Released) {
-                                eprintln!(
-                                    "[Hotkey] send_failed key=right_cmd event=Released error={}",
-                                    e
-                                );
-                                error!("发送热键事件失败: {}", e);
+                    }
+                    MacHotkey::Key {
+                        log_key,
+                        keycode: expected_keycode,
+                        ..
+                    } => {
+                        if keycode != expected_keycode {
+                            return Some(event.clone());
+                        }
+
+                        match event_type {
+                            CGEventType::KeyDown => {
+                                let is_repeat = event
+                                    .get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT)
+                                    != 0;
+                                if is_repeat {
+                                    return Some(event.clone());
+                                }
+                                let was = pressed_clone.swap(true, Ordering::SeqCst);
+                                if !was {
+                                    let n = pc.fetch_add(1, Ordering::SeqCst) + 1;
+                                    println!("[Hotkey] raw_event press={} key={}", n, log_key);
+                                    if let Err(e) = sender.send(HotkeyEvent::Pressed) {
+                                        eprintln!(
+                                            "[Hotkey] send_failed key={} event=Pressed error={}",
+                                            log_key, e
+                                        );
+                                        error!("发送热键事件失败: {}", e);
+                                    }
+                                }
                             }
+                            CGEventType::KeyUp => {
+                                let was = pressed_clone.swap(false, Ordering::SeqCst);
+                                if was {
+                                    let n = rc.fetch_add(1, Ordering::SeqCst) + 1;
+                                    println!("[Hotkey] raw_event release={} key={}", n, log_key);
+                                    if let Err(e) = sender.send(HotkeyEvent::Released) {
+                                        eprintln!(
+                                            "[Hotkey] send_failed key={} event=Released error={}",
+                                            log_key, e
+                                        );
+                                        error!("发送热键事件失败: {}", e);
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }

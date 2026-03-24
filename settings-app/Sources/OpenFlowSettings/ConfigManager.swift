@@ -50,8 +50,15 @@ class ConfigManager: ObservableObject {
         "quantized": "Quantized (default, smaller)",
         "fp16": "FP16 (higher accuracy)"
     ]
-    static let hotkeys = ["right_cmd", "fn", "f13"]
-    static let hotkeyLabels = ["Right Command (⌘)", "Fn", "F13"]
+    static let hotkeys = ["right_cmd", "right_option", "right_control", "right_shift", "fn", "f13"]
+    static let hotkeyLabels = [
+        "Right Command (⌘)",
+        "Right Option (⌥)",
+        "Right Control (⌃)",
+        "Right Shift (⇧)",
+        "Fn",
+        "F13"
+    ]
     static let triggerModes = ["toggle", "hold"]
     static let triggerLabels = ["Toggle (press start, press stop)", "Hold (hold to record)"]
 
@@ -157,6 +164,23 @@ class ConfigManager: ObservableObject {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(resolvedModelPath, forType: .string)
+    }
+
+    func openModelFolder() {
+        let fileManager = FileManager.default
+        let resolvedURL = URL(fileURLWithPath: resolvedModelPath)
+
+        if fileManager.fileExists(atPath: resolvedURL.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([resolvedURL])
+            return
+        }
+
+        let parentURL = resolvedURL.deletingLastPathComponent()
+        if fileManager.fileExists(atPath: parentURL.path) {
+            NSWorkspace.shared.open(parentURL)
+        } else {
+            NSWorkspace.shared.open(dataDir)
+        }
     }
 
     // MARK: - Config I/O
@@ -537,7 +561,7 @@ class ConfigManager: ObservableObject {
 
     func startHotkeyTest() {
         hotkeyTestActive = true
-        hotkeyTestLog = "Listening for Fn key events...\nPress Fn key now.\n\n"
+        hotkeyTestLog = "Listening for hotkey events...\nPress your configured hotkey now.\n\n"
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -572,42 +596,63 @@ class ConfigManager: ObservableObject {
     private var localEventMonitor: Any?
 
     private func startNSEventMonitor() {
-        // Monitor flag changes (modifier keys including Fn)
-        eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+        let mask: NSEvent.EventTypeMask = [.flagsChanged, .keyDown, .keyUp]
+
+        // Monitor modifier changes globally and function-key events when relevant.
+        eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
             guard let self = self, self.hotkeyTestActive else { return }
 
-            let flags = event.modifierFlags.rawValue
-            let fnDown = (flags & 0x800000) != 0
             let timestamp = String(format: "%.1f", event.timestamp)
-
-            let line = "[\(timestamp)] flags=0x\(String(flags, radix: 16)) fn=\(fnDown ? "DOWN" : "up  ") keycode=\(event.keyCode)\n"
-            DispatchQueue.main.async {
-                self.hotkeyTestLog += line
-                // Keep log manageable
-                let lines = self.hotkeyTestLog.components(separatedBy: "\n")
-                if lines.count > 50 {
-                    self.hotkeyTestLog = lines.suffix(40).joined(separator: "\n")
+            if event.type == .flagsChanged {
+                let flags = event.modifierFlags.rawValue
+                let fnDown = (flags & 0x800000) != 0
+                let cmdDown = event.modifierFlags.contains(.command)
+                let optDown = event.modifierFlags.contains(.option)
+                let ctrlDown = event.modifierFlags.contains(.control)
+                let shiftDown = event.modifierFlags.contains(.shift)
+                let line = "[\(timestamp)] type=flagsChanged keycode=\(event.keyCode) fn=\(fnDown ? "DOWN" : "up  ") cmd=\(cmdDown ? "DOWN" : "up  ") opt=\(optDown ? "DOWN" : "up  ") ctrl=\(ctrlDown ? "DOWN" : "up  ") shift=\(shiftDown ? "DOWN" : "up  ")\n"
+                DispatchQueue.main.async {
+                    self.appendHotkeyTestLine(line)
+                }
+            } else if self.hotkey == "f13", event.keyCode == 105 {
+                let line = "[\(timestamp)] type=\(event.type == .keyDown ? "keyDown" : "keyUp  ") key=f13 keycode=\(event.keyCode)\n"
+                DispatchQueue.main.async {
+                    self.appendHotkeyTestLine(line)
                 }
             }
         }
 
         // Also monitor local events (when this app is focused)
-        localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+        localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
             guard let self = self, self.hotkeyTestActive else { return event }
 
-            let flags = event.modifierFlags.rawValue
-            let fnDown = (flags & 0x800000) != 0
             let timestamp = String(format: "%.1f", event.timestamp)
-
-            let line = "[\(timestamp)] flags=0x\(String(flags, radix: 16)) fn=\(fnDown ? "DOWN ✅" : "up    ") keycode=\(event.keyCode)\n"
-            DispatchQueue.main.async {
-                self.hotkeyTestLog += line
-                let lines = self.hotkeyTestLog.components(separatedBy: "\n")
-                if lines.count > 50 {
-                    self.hotkeyTestLog = lines.suffix(40).joined(separator: "\n")
+            if event.type == .flagsChanged {
+                let flags = event.modifierFlags.rawValue
+                let fnDown = (flags & 0x800000) != 0
+                let cmdDown = event.modifierFlags.contains(.command)
+                let optDown = event.modifierFlags.contains(.option)
+                let ctrlDown = event.modifierFlags.contains(.control)
+                let shiftDown = event.modifierFlags.contains(.shift)
+                let line = "[\(timestamp)] type=flagsChanged keycode=\(event.keyCode) fn=\(fnDown ? "DOWN ✅" : "up    ") cmd=\(cmdDown ? "DOWN" : "up  ") opt=\(optDown ? "DOWN" : "up  ") ctrl=\(ctrlDown ? "DOWN" : "up  ") shift=\(shiftDown ? "DOWN" : "up  ")\n"
+                DispatchQueue.main.async {
+                    self.appendHotkeyTestLine(line)
+                }
+            } else if self.hotkey == "f13", event.keyCode == 105 {
+                let line = "[\(timestamp)] type=\(event.type == .keyDown ? "keyDown" : "keyUp  ") key=f13 keycode=\(event.keyCode)\n"
+                DispatchQueue.main.async {
+                    self.appendHotkeyTestLine(line)
                 }
             }
             return event
+        }
+    }
+
+    private func appendHotkeyTestLine(_ line: String) {
+        hotkeyTestLog += line
+        let lines = hotkeyTestLog.components(separatedBy: "\n")
+        if lines.count > 50 {
+            hotkeyTestLog = lines.suffix(40).joined(separator: "\n")
         }
     }
 

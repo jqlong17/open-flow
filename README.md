@@ -51,8 +51,9 @@
 - 菜单栏托盘图标（灰/红/黄），录音时可选**浮动指示器**（光标旁「录音中…」「转写中…」）
 - 可配置热键（右 Command / Fn / F13）、触发模式（按一次开关 toggle / 按住录 hold）、**简繁转换**（简→繁 / 繁→简）
 - 可选本地 SenseVoice 或 **Groq Whisper** 云端识别；可切换模型预设（quantized / fp16）
-- 可选 **BigModel 轻量纠错**：支持个人词表，修正常见术语与明显 ASR 错误（需用户自行配置 API Key）
-- **macOS**：托盘菜单「偏好设置…」打开 **SwiftUI 设置界面**，图形化管理热键、Provider、模型、权限与日志
+- 新增 **Vocabulary 词库页**：集中管理个人热词、纠错模型、智谱 API Key 与本地词表文件
+- 可选 **BigModel 轻量纠错**：结合个人热词，对 ASR 输出做二次修正，改善专有名词、产品名与项目代号的识别结果
+- **macOS**：托盘菜单「偏好设置…」打开 **SwiftUI 设置界面**，图形化管理热键、词库、识别 Provider、模型、权限与诊断
 - **macOS**：托盘菜单支持自动更新（后台下载，下载完成后点击重启应用更新）
 
 ### 浮动录音指示器（macOS）
@@ -67,24 +68,43 @@
 
 从托盘菜单点击 **「偏好设置…」** 可打开图形化设置窗口，无需改 config 文件即可管理以下内容。
 
-![Open Flow 设置界面 - 一般](assets/settings-app-general.png)
+![Open Flow 设置界面](assets/settings-app-general.png)
 
 | 分页 | 功能 |
 |------|------|
-| **一般** | 热键（右 Command / Fn / F13）、触发模式（Toggle / Hold）、简繁转换（无 / 简→繁 / 繁→简）、macOS 权限状态与「打开设置」跳转 |
-| **Provider** | 本地 / Groq 切换、Groq API Key、Whisper 模型与语言、保存并应用 |
-| **模型** | 模型状态、下载/重新下载、路径显示 |
-| **测试** | 实时热键事件监听，验证按键是否被识别 |
-| **日志** | 查看 daemon 最近约 100 行日志 |
+| **General** | 热键（右 Command / 右 Option / Fn / F13 等）、触发模式（Toggle / Hold）、简繁转换（无 / 简→繁 / 繁→简） |
+| **Vocabulary** | 个人热词、纠错开关、纠错模型、智谱 API Key、本地词表文件入口 |
+| **Recognition** | 本地 SenseVoice / Groq Whisper 切换、Groq API Key、Whisper 模型与语言 |
+| **Models** | 本地模型状态、下载/重新下载、模型目录路径与 Finder 打开入口 |
+| **Permissions** | macOS 权限状态、「打开设置」跳转与重启 daemon 提示 |
+| **Diagnostics** | 热键监听测试、daemon 日志、模型下载输出 |
 
-窗口顶部显示 **daemon 状态**（运行中 PID、运行时间），并提供 **Start / Stop / Restart / Quit Open Flow** 等控制。权限项会显示是否已授权（绿色勾）或可点击跳转系统设置。修改后点击 **Save** 保存；部分项需重启 daemon 后生效。
+新版配置页采用更精致的侧边栏和更紧凑的卡片布局，把原本分散的设置入口统一到了同一套 SwiftUI 面板里。窗口底部的 **Save Changes** 会同时保存 `config.toml` 与个人词表；权限项会显示是否已授权，模型页也可以直接打开模型所在文件夹。
 
 ### Personal Vocabulary / BigModel 纠错
 
-- `General -> Personal Vocabulary -> Configure` 可开启轻量云纠错
-- 为避免泄露，仓库与发布包**不内置 API Key**，需用户自行生成并填写
-- BigModel API Key 申请地址：`https://bigmodel.cn/usercenter/proj-mgmt/apikeys`
-- 关闭该开关时，Open Flow 仅使用本地/Provider 转写结果，不会调用 BigModel
+用途：
+
+- 降低人名、产品名、项目代号、内部术语这类高频专有词被识别错的概率
+- 在本地 SenseVoice 或 Groq Whisper 完成转写后，再做一次轻量文本修正
+- 不改动录音流程，仍然保持「录音 -> 转写 -> 粘贴」的即时体验
+
+配置位置：
+
+- 托盘菜单 **「偏好设置…」 -> `Vocabulary`**
+- 打开 **Enable correction**
+- 在 **Model** 中填写或保留默认的 `GLM-4-Flash-250414`
+- 在 **API key** 处填写智谱 BigModel API Key；右侧 **`API Keys`** 按钮可直接跳转申请页面
+- 在 **Personal Vocabulary** 中按行填写热词，然后点击 **Save Changes**
+
+补充说明：
+
+- 为避免泄露，仓库与发布包**不内置 API Key**，需要用户自行申请并配置
+- BigModel API Key 申请页：[https://bigmodel.cn/usercenter/proj-mgmt/apikeys](https://bigmodel.cn/usercenter/proj-mgmt/apikeys)
+- `GLM-4-Flash-250414` 是智谱官方文档标注的免费模型，适合先用来体验热词纠错能力：
+  [模型文档](https://docs.bigmodel.cn/cn/guide/models/free/glm-4-flash-250414) / [模型概览](https://docs.bigmodel.cn/cn/guide/start/model-overview)
+- 关闭 **Enable correction** 时，Open Flow 只使用原始 ASR 结果，不会调用大模型纠错
+- 个人词表保存在本机 `~/Library/Application Support/com.openflow.open-flow/personal_vocabulary.txt`
 
 ---
 

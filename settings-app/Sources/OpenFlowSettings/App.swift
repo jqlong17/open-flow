@@ -7,12 +7,12 @@ struct OpenFlowSettingsApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .frame(minWidth: 520, minHeight: 480)
-                .frame(maxWidth: 600, maxHeight: 700)
+                .frame(minWidth: 1080, minHeight: 720)
+                .frame(maxWidth: 1400, maxHeight: 920)
         }
         .windowStyle(.titleBar)
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 540, height: 520)
+        .defaultSize(width: 1160, height: 780)
     }
 }
 

@@ -1,764 +1,1122 @@
 import SwiftUI
 
+private enum SettingsPane: String, CaseIterable, Identifiable {
+    case general
+    case vocabulary
+    case recognition
+    case models
+    case permissions
+    case diagnostics
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .vocabulary: "Vocabulary"
+        case .recognition: "Recognition"
+        case .models: "Models"
+        case .permissions: "Permissions"
+        case .diagnostics: "Diagnostics"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .general:
+            "Tune the core voice input behavior and how text is cleaned before paste."
+        case .vocabulary:
+            "Manage correction settings and the terms Open Flow should preserve across transcripts."
+        case .recognition:
+            "Choose between local SenseVoice and Groq Whisper, then adjust how transcription runs."
+        case .models:
+            "Manage local model presets, download progress, and the storage path on this Mac."
+        case .permissions:
+            "Check the macOS permissions Open Flow needs for recording, hotkeys, and text injection."
+        case .diagnostics:
+            "Inspect hotkey events, daemon logs, and download output when something feels off."
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .general: "slider.horizontal.3"
+        case .vocabulary: "book.closed"
+        case .recognition: "waveform.and.mic"
+        case .models: "shippingbox"
+        case .permissions: "lock.shield"
+        case .diagnostics: "stethoscope"
+        }
+    }
+}
+
 struct ContentView: View {
     @StateObject private var config = ConfigManager()
-    @State private var selectedTab = 0
+    @State private var selectedPane: SettingsPane = .recognition
     @State private var showSaveConfirmation = false
     @State private var showCopyConfirmation = false
-    @State private var showPersonalVocabularySheet = false
+
+    private let sidebarWidth: CGFloat = 210
+    private let pageSpacing: CGFloat = 16
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header with daemon status
-            headerView
-            Divider()
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.90, green: 0.94, blue: 0.99),
+                    Color(red: 0.96, green: 0.97, blue: 0.99),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
 
-            // Tab content
-            TabView(selection: $selectedTab) {
-                generalTab
-                    .tabItem { Label("General", systemImage: "gearshape") }
-                    .tag(0)
+            HStack(spacing: 0) {
+                sidebar
+                    .frame(width: sidebarWidth)
 
-                providerTab
-                    .tabItem { Label("Provider", systemImage: "brain.head.profile") }
-                    .tag(1)
-
-                modelTab
-                    .tabItem { Label("Model", systemImage: "arrow.down.circle") }
-                    .tag(2)
-
-                testTab
-                    .tabItem { Label("Test", systemImage: "play.circle") }
-                    .tag(3)
-
-                logsTab
-                    .tabItem { Label("Logs", systemImage: "doc.text") }
-                    .tag(4)
+                mainSurface
             }
-            .padding(.top, 8)
-
-            // Error bar
-            if !config.lastError.isEmpty {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                    Text(config.lastError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
-                    Spacer()
-                    Button("Dismiss") { config.lastError = "" }
-                        .buttonStyle(.borderless)
-                        .font(.caption)
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 6)
-                .background(.red.opacity(0.1))
-            }
-
-            Divider()
-
-            // Bottom bar
-            bottomBar
+            .padding(12)
         }
-        .sheet(isPresented: $showPersonalVocabularySheet) {
-            PersonalVocabularySheet(config: config)
-        }
-    }
-
-    // MARK: - Header
-
-    private var headerView: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "waveform.circle.fill")
-                .font(.system(size: 28))
-                .foregroundStyle(.blue)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Open Flow")
-                    .font(.title3.bold())
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(config.daemonRunning ? .green : .red)
-                        .frame(width: 8, height: 8)
-                    Text(config.daemonRunning
-                         ? "Running (PID \(config.daemonPID))"
-                         : "Not Running")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if !config.daemonUptime.isEmpty {
-                        Text("uptime \(config.daemonUptime)")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-
-            Spacer()
-
-            // Daemon controls
-            if config.daemonRunning {
-                Button("Quit Open Flow") { config.quitApp() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(.red)
-            } else {
-                Button("Open App") { config.startDaemon() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-    }
-
-    // MARK: - General Tab
-
-    private var generalTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                SettingsSection(title: "Hotkey", icon: "keyboard") {
-                    Picker("Key", selection: $config.hotkey) {
-                        ForEach(Array(zip(ConfigManager.hotkeys, ConfigManager.hotkeyLabels)), id: \.0) { key, label in
-                            Text(label).tag(key)
-                        }
-                    }
-                    .pickerStyle(.radioGroup)
-
-                    Divider()
-
-                    Picker("Trigger Mode", selection: $config.triggerMode) {
-                        ForEach(Array(zip(ConfigManager.triggerModes, ConfigManager.triggerLabels)), id: \.0) { mode, label in
-                            Text(label).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.radioGroup)
-                }
-
-                SettingsSection(title: "Personal Vocabulary", icon: "text.book.closed") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Cloud correction for obvious ASR mistakes")
-                                    .font(.callout)
-                                Text("Uses your personal vocabulary as a correction hint. It only rewrites clear recognition errors and should not summarize or change facts.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button("Configure") {
-                                showPersonalVocabularySheet = true
-                            }
-                            .buttonStyle(.borderedProminent)
-                        }
-
-                        HStack {
-                            Text("Status")
-                            Spacer()
-                            Text(config.correctionIsEnabled ? "Enabled" : "Disabled")
-                                .font(.caption)
-                                .foregroundStyle(config.correctionIsEnabled ? .green : .secondary)
-                        }
-
-                        HStack {
-                            Text("Model")
-                            Spacer()
-                            Text(config.normalizedCorrectionModel)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                // Chinese conversion
-                SettingsSection(title: "Text Processing", icon: "textformat.abc") {
-                    Picker("Chinese Conversion", selection: $config.chineseConversion) {
-                        Text("None").tag("")
-                        Text("Simplified → Traditional (簡→繁)").tag("s2t")
-                        Text("Traditional → Simplified (繁→簡)").tag("t2s")
-                    }
-                    .pickerStyle(.radioGroup)
-
-                    Text("Uses macOS native ICU transform. Applied to transcription output before pasting.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                // Permissions section
-                SettingsSection(title: "macOS Permissions", icon: "lock.shield") {
-                    permissionRow(
-                        name: "Accessibility",
-                        detail: "Required for global hotkey detection and text paste",
-                        granted: config.accessibilityGranted,
-                        action: { config.openAccessibilitySettings() }
-                    )
-
-                    Divider()
-
-                    permissionRow(
-                        name: "Input Monitoring",
-                        detail: "Required for listening to keyboard events",
-                        granted: config.inputMonitoringGranted,
-                        action: { config.openInputMonitoringSettings() }
-                    )
-
-                    Divider()
-
-                    permissionRow(
-                        name: "Microphone",
-                        detail: "Required for recording audio",
-                        granted: config.microphoneGranted,
-                        action: { config.openMicrophoneSettings() }
-                    )
-
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Look for \"Open Flow\" in System Settings.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                        Text("After granting permissions, restart the daemon for changes to take effect.")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-            .padding(20)
-        }
-    }
-
-    private func permissionRow(name: String, detail: String, granted: Bool, action: @escaping () -> Void) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if granted {
-                Label("Granted", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.callout)
-            } else {
-                Button("Open Settings") { action() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-            }
-        }
-    }
-
-    // MARK: - Provider Tab
-
-    private var providerTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                SettingsSection(title: "Speech Recognition Provider", icon: "brain.head.profile") {
-                    Picker("Provider", selection: $config.provider) {
-                        Text("Local (SenseVoice ONNX)").tag("local")
-                        Text("Groq Cloud (Whisper API)").tag("groq")
-                    }
-                    .pickerStyle(.segmented)
-
-                    if config.provider == "local" {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Image(systemName: "checkmark.shield.fill")
-                                    .foregroundStyle(.green)
-                                Text("All processing is done locally. No data leaves your machine.")
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Divider()
-
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("Local Model")
-                                    .font(.subheadline.weight(.semibold))
-
-                                Picker("Local Model", selection: $config.modelPreset) {
-                                    Text("Quantized (default, smaller)").tag("quantized")
-                                    Text("FP16 (higher accuracy)").tag("fp16")
-                                }
-                                .pickerStyle(.radioGroup)
-                                .disabled(config.modelDownloading)
-
-                                HStack {
-                                    Text("Selected")
-                                    Spacer()
-                                    Text(config.selectedLocalModelLabel)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                HStack {
-                                    Text("Status")
-                                    Spacer()
-                                    if config.modelReady {
-                                        Label("Downloaded", systemImage: "checkmark.circle.fill")
-                                            .foregroundStyle(.green)
-                                    } else if config.modelDownloading {
-                                        Label("Downloading", systemImage: "arrow.down.circle.fill")
-                                            .foregroundStyle(.blue)
-                                    } else {
-                                        Label("Not downloaded", systemImage: "tray.fill")
-                                            .foregroundStyle(.orange)
-                                    }
-                                }
-
-                                HStack {
-                                    Text("Path")
-                                    Spacer()
-                                    Button {
-                                        copyModelPath()
-                                    } label: {
-                                        HStack(spacing: 4) {
-                                            Text(config.resolvedModelPath)
-                                                .font(.caption)
-                                                .lineLimit(1)
-                                                .truncationMode(.middle)
-                                            Image(systemName: "doc.on.doc")
-                                                .font(.caption2)
-                                        }
-                                        .foregroundStyle(.secondary)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .help("Click to copy path")
-                                }
-
-                                if config.modelDownloading {
-                                    ProgressView(value: config.modelDownloadProgress)
-                                        .progressViewStyle(.linear)
-                                    Text(config.modelDownloadStatus.isEmpty ? "Downloading model..." : config.modelDownloadStatus)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                } else if !config.modelReady {
-                                    Text("Selecting a model preset automatically starts download if it is missing.")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if config.provider == "groq" {
-                    SettingsSection(title: "Groq API Settings", icon: "cloud") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Text("API Key")
-                                Spacer()
-                                if !config.groqApiKey.isEmpty {
-                                    Label("Set", systemImage: "checkmark.circle.fill")
-                                        .font(.caption)
-                                        .foregroundStyle(.green)
-                                } else if ProcessInfo.processInfo.environment["GROQ_API_KEY"] != nil {
-                                    Label("From env", systemImage: "checkmark.circle.fill")
-                                        .font(.caption)
-                                        .foregroundStyle(.blue)
-                                }
-                            }
-
-                            SecureField("gsk_...", text: $config.groqApiKey)
-                                .textFieldStyle(.roundedBorder)
-
-                            Text("Or set GROQ_API_KEY environment variable. Get a free key at console.groq.com")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-
-                            Divider()
-
-                            Picker("Whisper Model", selection: $config.groqModel) {
-                                Text("Large v3 Turbo (faster, cheaper)").tag("whisper-large-v3-turbo")
-                                Text("Large v3 (more accurate)").tag("whisper-large-v3")
-                            }
-
-                            Divider()
-
-                            HStack {
-                                Text("Language")
-                                TextField("auto", text: $config.groqLanguage)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(maxWidth: 100)
-                            }
-                            Text("Leave empty for auto-detect. Examples: en, zh, ja, ko, es, fr")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            .padding(20)
+        .onAppear {
+            config.checkModelReady()
         }
         .onChange(of: config.provider) { newValue in
             if newValue == "local" {
-                config.ensureSelectedLocalModelReady()
+                config.checkModelReady()
             }
         }
         .onChange(of: config.modelPreset) { newValue in
             guard config.provider == "local" else { return }
             config.selectLocalModelPreset(newValue)
-            if !config.modelReady {
-                config.downloadModel()
-            }
         }
     }
 
-    // MARK: - Model Tab
-
-    private var modelTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                SettingsSection(title: "SenseVoice Model (Local ASR)", icon: "cpu") {
-                    HStack {
-                        Text("Status")
-                        Spacer()
-                        if config.modelReady {
-                            Label("Ready", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                        } else {
-                            Label("Not found", systemImage: "xmark.circle.fill")
-                                .foregroundStyle(.red)
-                        }
-                    }
-
-                    HStack {
-                        Text("Preset")
-                        Spacer()
-                        Text(config.selectedLocalModelLabel)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    HStack {
-                        Text("Path")
-                        Spacer()
-                        Button {
-                            copyModelPath()
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text(config.resolvedModelPath)
-                                    .font(.caption)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Image(systemName: "doc.on.doc")
-                                    .font(.caption2)
-                            }
-                            .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Click to copy path")
-                    }
-
-                    Divider()
-
-                    HStack {
-                        Button(config.modelReady ? "Re-download Model" : "Download Model") {
-                            config.downloadModel()
-                        }
-                        .disabled(config.modelDownloading)
-
-                        if config.modelDownloading {
-                            ProgressView()
-                                .scaleEffect(0.7)
-                        }
-                    }
-
-                    Text(config.selectedLocalModelDownloadSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if config.modelDownloading {
-                        ProgressView(value: config.modelDownloadProgress)
-                            .progressViewStyle(.linear)
-                        Text(config.modelDownloadStatus.isEmpty ? "Downloading model..." : config.modelDownloadStatus)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                if !config.modelDownloadOutput.isEmpty {
-                    SettingsSection(title: "Download Output", icon: "terminal") {
-                        ScrollView {
-                            Text(config.modelDownloadOutput)
-                                .font(.system(.caption, design: .monospaced))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-                        }
-                        .frame(maxHeight: 200)
-                    }
-                }
-            }
-            .padding(20)
-        }
-    }
-
-    // MARK: - Test Tab
-
-    private var testTab: some View {
+    private var sidebar: some View {
         VStack(alignment: .leading, spacing: 16) {
-            SettingsSection(title: "Hotkey Test", icon: "keyboard.badge.eye") {
-                Text("Test that your hotkey (Fn key, Right Cmd, etc.) is being detected by the system.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            Button {
+                if config.daemonRunning {
+                    config.quitApp()
+                } else {
+                    config.startDaemon()
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.left")
+                        .font(.system(size: 15, weight: .medium))
+                    Text("返回应用")
+                        .font(.system(size: 15, weight: .medium))
+                }
+                .foregroundStyle(Color(red: 0.40, green: 0.45, blue: 0.54))
+                .padding(.horizontal, 6)
+                .padding(.top, 8)
+            }
+            .buttonStyle(.plain)
 
-                HStack {
-                    if config.hotkeyTestActive {
-                        Button("Stop Test") {
-                            config.stopHotkeyTest()
+            VStack(alignment: .leading, spacing: 6) {
+
+                ForEach(SettingsPane.allCases) { pane in
+                    SidebarItemButton(
+                        title: pane.title,
+                        subtitle: nil,
+                        icon: pane.icon,
+                        isSelected: pane == selectedPane
+                    ) {
+                        selectedPane = pane
+                    }
+                }
+            }
+
+            Spacer()
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(config.daemonRunning ? Color(red: 0.20, green: 0.75, blue: 0.46) : Color(red: 0.74, green: 0.77, blue: 0.82))
+                        .frame(width: 8, height: 8)
+                    Text(config.daemonRunning ? "运行中" : "未运行")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                }
+
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([config.configFileURL])
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 13, weight: .medium))
+                        Text("显示配置")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 10)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(Color(red: 0.92, green: 0.95, blue: 0.98).opacity(0.95))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(Color.white.opacity(0.68), lineWidth: 1)
+        )
+    }
+
+    private var mainSurface: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: pageSpacing) {
+                    pageHeader
+
+                    if !config.lastError.isEmpty {
+                        bannerCard(
+                            icon: "exclamationmark.triangle.fill",
+                            title: "Something needs attention",
+                            message: config.lastError,
+                            tint: Color(red: 0.92, green: 0.37, blue: 0.33)
+                        ) {
+                            config.lastError = ""
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.red)
+                    }
 
-                        Circle()
-                            .fill(.green)
-                            .frame(width: 10, height: 10)
-                            .overlay(
-                                Circle()
-                                    .fill(.green.opacity(0.3))
-                                    .frame(width: 20, height: 20)
-                            )
+                    pageContent
+                }
+                .padding(24)
+            }
 
-                        Text("Listening...")
-                            .font(.callout)
-                            .foregroundStyle(.green)
+            Divider()
+                .overlay(Color(red: 0.91, green: 0.93, blue: 0.96))
+
+            bottomBar
+                .padding(.horizontal, 24)
+                .padding(.vertical, 14)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .fill(Color.white.opacity(0.98))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .stroke(Color.white.opacity(0.9), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.06), radius: 28, x: 0, y: 12)
+    }
+
+    private var pageHeader: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(selectedPane.title)
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color(red: 0.07, green: 0.09, blue: 0.13))
+
+                Text(selectedPane.subtitle)
+                    .font(.system(size: 13.5, weight: .medium))
+                    .foregroundStyle(Color(red: 0.40, green: 0.45, blue: 0.54))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+
+            HStack(spacing: 10) {
+                borderAction(title: "Refresh", icon: "arrow.clockwise") {
+                    config.refreshStatus()
+                    config.refreshPermissions()
+                    config.checkModelReady()
+                    if selectedPane == .diagnostics {
+                        config.loadLogs()
+                    }
+                }
+
+                borderAction(title: selectedPane == .vocabulary ? "Reveal Vocabulary" : "Reveal Config", icon: "folder") {
+                    if selectedPane == .vocabulary {
+                        NSWorkspace.shared.activateFileViewerSelecting([config.personalVocabularyFileURL])
                     } else {
-                        Button("Start Listening") {
-                            config.startHotkeyTest()
-                        }
-                        .buttonStyle(.borderedProminent)
+                        NSWorkspace.shared.activateFileViewerSelecting([config.configFileURL])
+                    }
+                }
+            }
+        }
+    }
 
-                        Text("Press to start monitoring key events")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+    @ViewBuilder
+    private var pageContent: some View {
+        switch selectedPane {
+        case .general:
+            generalPage
+        case .vocabulary:
+            vocabularyPage
+        case .recognition:
+            recognitionPage
+        case .models:
+            modelsPage
+        case .permissions:
+            permissionsPage
+        case .diagnostics:
+            diagnosticsPage
+        }
+    }
+
+    private var generalPage: some View {
+        VStack(alignment: .leading, spacing: pageSpacing) {
+            SettingsCard(title: "Input Behavior", subtitle: "Set how you start recording and how Open Flow reacts while you speak.") {
+                VStack(spacing: 0) {
+                    rowDivider
+                    SettingsRow(label: "Hotkey", description: "Pick the key Open Flow listens for globally.") {
+                        Picker("", selection: $config.hotkey) {
+                            ForEach(Array(zip(ConfigManager.hotkeys, ConfigManager.hotkeyLabels)), id: \.0) { key, label in
+                                Text(label).tag(key)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .frame(width: 220)
+                    }
+
+                    rowDivider
+                    SettingsRow(label: "Trigger mode", description: "Toggle works well for dictation, while hold feels more like push-to-talk.") {
+                        Picker("", selection: $config.triggerMode) {
+                            ForEach(Array(zip(ConfigManager.triggerModes, ConfigManager.triggerLabels)), id: \.0) { mode, label in
+                                Text(label.replacingOccurrences(of: " (press start, press stop)", with: "").replacingOccurrences(of: " (hold to record)", with: "")).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 320)
+                    }
+                }
+            }
+
+            SettingsCard(title: "Text Processing", subtitle: "Shape the text after ASR before it is pasted into your editor or app.") {
+                VStack(spacing: 0) {
+                    SettingsRow(label: "Chinese conversion", description: "Apply ICU-based simplified/traditional conversion to the final transcription.") {
+                        Picker("", selection: $config.chineseConversion) {
+                            Text("None").tag("")
+                            Text("简 → 繁").tag("s2t")
+                            Text("繁 → 简").tag("t2s")
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 220)
+                    }
+                }
+            }
+        }
+    }
+
+    private var vocabularyPage: some View {
+        VStack(alignment: .leading, spacing: pageSpacing) {
+            SettingsCard(title: "Correction Settings", subtitle: "Control the optional cleanup pass that fixes names, product terms, and obvious ASR mistakes after transcription.") {
+                VStack(spacing: 0) {
+                    SettingsRow(label: "Enable correction", description: "Turn on the extra correction step that uses your vocabulary as hints.") {
+                        Toggle("", isOn: correctionEnabledBinding)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                    }
+
+                    rowDivider
+                    SettingsRow(label: "Model", description: "Correction model used only when this feature is enabled.") {
+                        TextField("glm-4.7-flash", text: $config.correctionModel)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 240)
+                    }
+
+                    rowDivider
+                    SettingsRow(label: "API key", description: "Stored locally and used only for the correction request.") {
+                        VStack(alignment: .trailing, spacing: 8) {
+                            HStack(spacing: 8) {
+                                SecureField("zhipu api key", text: $config.correctionApiKey)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 240)
+
+                                Link(destination: URL(string: "https://bigmodel.cn/usercenter/proj-mgmt/apikeys")!) {
+                                    subtleActionLabel(title: "API Keys", icon: "arrow.up.right.square")
+                                        .fixedSize(horizontal: true, vertical: false)
+                                }
+                            }
+
+                            Text("Apply for your Zhipu API Key on BigModel. The default correction model, GLM-4-Flash-250414, is an official free model and works well for trying hotword correction first.")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                                .frame(width: 420, alignment: .trailing)
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
+                }
+            }
+
+            SettingsCard(title: "Personal Vocabulary", subtitle: "One term or phrase per line. Keep names, products, project codenames, and domain jargon here so correction stays stable.") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("This list is saved locally on this Mac.")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+
+                        Spacer()
+
+                        subtleAction(title: "Open File", icon: "folder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([config.personalVocabularyFileURL])
+                        }
+                    }
+
+                    ZStack(alignment: .topLeading) {
+                        if config.personalVocabulary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text("Open Flow\nSenseVoice\nGLM-4-Flash-250414")
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(Color(red: 0.63, green: 0.67, blue: 0.74))
+                                .padding(.horizontal, 18)
+                                .padding(.vertical, 18)
+                                .allowsHitTesting(false)
+                        }
+
+                        TextEditor(text: $config.personalVocabulary)
+                            .font(.system(.body, design: .monospaced))
+                            .scrollContentBackground(.hidden)
+                            .padding(14)
+                    }
+                    .background(Color(red: 0.97, green: 0.98, blue: 0.99))
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(Color(red: 0.92, green: 0.94, blue: 0.97), lineWidth: 1)
+                    )
+                    .frame(minHeight: 320)
+                }
+            }
+        }
+    }
+
+    private var recognitionPage: some View {
+        VStack(alignment: .leading, spacing: pageSpacing) {
+            SettingsCard(title: "Speech Recognition Provider", subtitle: "Choose the engine that powers transcription across the app.") {
+                VStack(spacing: 0) {
+                    SettingsRow(label: "Provider", description: "Use local SenseVoice for privacy, or Groq Whisper for cloud transcription.") {
+                        Picker("", selection: $config.provider) {
+                            Text("Local").tag("local")
+                            Text("Groq").tag("groq")
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 220)
+                    }
+
+                    rowDivider
+                    HStack(alignment: .top, spacing: 14) {
+                        providerBlurb(
+                            title: "Local SenseVoice",
+                            icon: "lock.shield",
+                            accent: Color(red: 0.24, green: 0.74, blue: 0.49),
+                            body: "Audio stays on-device. Best when privacy and offline use matter more than the easiest setup.",
+                            isActive: config.provider == "local"
+                        )
+
+                        providerBlurb(
+                            title: "Groq Whisper",
+                            icon: "cloud.sun",
+                            accent: Color(red: 0.23, green: 0.58, blue: 0.96),
+                            body: "Fast cloud setup with Whisper models. Requires an API key and sends audio to Groq.",
+                            isActive: config.provider == "groq"
+                        )
+                    }
+                    .padding(.top, 18)
+                }
+            }
+
+            if config.provider == "local" {
+                SettingsCard(title: "Local Provider Details", subtitle: "Tune the local model preset and inspect its readiness at a glance.") {
+                    VStack(spacing: 0) {
+                        SettingsRow(label: "Preset", description: "Quantized is lighter, while FP16 aims for higher fidelity.") {
+                            Picker("", selection: $config.modelPreset) {
+                                Text("Quantized").tag("quantized")
+                                Text("FP16").tag("fp16")
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 210)
+                        }
+
+                        rowDivider
+                        SettingsRow(label: "Model status", description: "Open Flow will use the selected preset from the path below.") {
+                            StatusPill(
+                                text: config.modelDownloading ? "Downloading" : (config.modelReady ? "Ready" : "Not downloaded"),
+                                tone: config.modelDownloading ? .info : (config.modelReady ? .success : .warning)
+                            )
+                        }
+
+                        rowDivider
+                        SettingsRow(label: "Model path", description: "Click to copy the resolved path, or open the folder in Finder when you need to inspect the local preset.") {
+                            modelPathActions
+                        }
+                    }
+                }
+            } else {
+                SettingsCard(title: "Groq Configuration", subtitle: "Connect Whisper through Groq and choose the model profile you want.") {
+                    VStack(spacing: 0) {
+                        SettingsRow(label: "API key", description: "You can paste a Groq key here or provide it through the GROQ_API_KEY environment variable.") {
+                            VStack(alignment: .trailing, spacing: 8) {
+                                SecureField("gsk_...", text: $config.groqApiKey)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 300)
+
+                                StatusPill(
+                                    text: !config.groqApiKey.isEmpty ? "Stored locally" : (ProcessInfo.processInfo.environment["GROQ_API_KEY"] != nil ? "From env" : "Missing"),
+                                    tone: !config.groqApiKey.isEmpty || ProcessInfo.processInfo.environment["GROQ_API_KEY"] != nil ? .success : .warning
+                                )
+                            }
+                        }
+
+                        rowDivider
+                        SettingsRow(label: "Whisper model", description: "Large v3 Turbo is the default balance of speed and cost.") {
+                            Picker("", selection: $config.groqModel) {
+                                Text("Large v3 Turbo").tag("whisper-large-v3-turbo")
+                                Text("Large v3").tag("whisper-large-v3")
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 250)
+                        }
+
+                        rowDivider
+                        SettingsRow(label: "Language hint", description: "Leave empty for auto-detect, or set values like zh, en, ja, or ko.") {
+                            TextField("auto", text: $config.groqLanguage)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 120)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var modelsPage: some View {
+        VStack(alignment: .leading, spacing: pageSpacing) {
+            SettingsCard(title: "Model Storage", subtitle: "Keep the local model assets healthy and visible so setup stays predictable.") {
+                VStack(spacing: 0) {
+                    SettingsRow(label: "Preset", description: "Open Flow stores quantized and FP16 in separate folders under Application Support.") {
+                        Picker("", selection: $config.modelPreset) {
+                            Text("Quantized").tag("quantized")
+                            Text("FP16").tag("fp16")
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 210)
+                    }
+
+                    rowDivider
+                    SettingsRow(label: "Model status", description: "Check whether the selected preset is available locally before the daemon tries to load it.") {
+                        StatusPill(
+                            text: config.modelDownloading ? "Downloading" : (config.modelReady ? "Ready" : "Missing"),
+                            tone: config.modelDownloading ? .info : (config.modelReady ? .success : .warning)
+                        )
+                    }
+
+                    rowDivider
+                    SettingsRow(label: "Download", description: "Fetch or refresh the current preset from Hugging Face when the local files are missing or outdated.") {
+                        VStack(alignment: .trailing, spacing: 8) {
+                            SoftActionButton(
+                                title: config.modelReady ? "Re-download Model" : "Download Model",
+                                icon: "arrow.down.circle.fill",
+                                fill: Color(red: 0.23, green: 0.58, blue: 0.96),
+                                foreground: .white
+                            ) {
+                                config.downloadModel()
+                            }
+                            .disabled(config.modelDownloading)
+
+                            if config.modelDownloading {
+                                ProgressView(value: config.modelDownloadProgress)
+                                    .progressViewStyle(.linear)
+                                    .frame(width: 220)
+                                Text(config.modelDownloadStatus.isEmpty ? "Preparing download..." : config.modelDownloadStatus)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                            } else {
+                                Text(config.selectedLocalModelDownloadSummary)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                            }
+                        }
+                    }
+
+                    rowDivider
+                    SettingsRow(label: "Resolved path", description: "This is the directory the daemon will look at when loading the local ASR preset. You can copy it or open the folder directly in Finder.") {
+                        modelPathActions
+                    }
+                }
+            }
+
+            if !config.modelDownloadOutput.isEmpty {
+                SettingsCard(title: "Download Output", subtitle: "Raw command output for debugging downloads and confirming what happened last.") {
+                    ScrollView {
+                        Text(config.modelDownloadOutput)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(Color(red: 0.25, green: 0.28, blue: 0.34))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .padding(18)
+                    }
+                    .frame(minHeight: 180, maxHeight: 260)
+                    .background(Color(red: 0.97, green: 0.98, blue: 0.99))
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+            }
+        }
+    }
+
+    private var permissionsPage: some View {
+        VStack(alignment: .leading, spacing: pageSpacing) {
+            SettingsCard(title: "macOS Permission Checklist", subtitle: "Open the right system panel when something is missing, then restart the daemon after granting access.") {
+                VStack(spacing: 0) {
+                    permissionSettingsRow(
+                        title: "Accessibility",
+                        description: "Needed for global hotkey detection and text paste actions.",
+                        granted: config.accessibilityGranted,
+                        action: config.openAccessibilitySettings
+                    )
+
+                    rowDivider
+                    permissionSettingsRow(
+                        title: "Input Monitoring",
+                        description: "Needed for listening to keyboard events like Fn or Right Command.",
+                        granted: config.inputMonitoringGranted,
+                        action: config.openInputMonitoringSettings
+                    )
+
+                    rowDivider
+                    permissionSettingsRow(
+                        title: "Microphone",
+                        description: "Needed for recording and transcribing your speech.",
+                        granted: config.microphoneGranted,
+                        action: config.openMicrophoneSettings
+                    )
+                }
+            }
+
+            SettingsCard(title: "After granting access", subtitle: "macOS permission updates are not always live. Restarting the daemon keeps the setup predictable.") {
+                SettingsRow(label: "Restart hint", description: "Once all required permissions are granted, restart Open Flow so the daemon re-checks access from a clean state.") {
+                    SoftActionButton(
+                        title: "Restart daemon",
+                        icon: "arrow.clockwise",
+                        fill: Color(red: 0.92, green: 0.95, blue: 0.99),
+                        foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
+                    ) {
+                        config.restartDaemon()
+                    }
+                }
+            }
+        }
+    }
+
+    private var diagnosticsPage: some View {
+        VStack(alignment: .leading, spacing: pageSpacing) {
+            SettingsCard(title: "Hotkey Test", subtitle: "Listen for modifier changes and confirm the system sees the hotkey you want to use.") {
+                VStack(spacing: 0) {
+                    SettingsRow(label: "Listener", description: "Start monitoring and press Fn or your configured key to see raw event details.") {
+                        HStack(spacing: 12) {
+                            SoftActionButton(
+                                title: config.hotkeyTestActive ? "Stop Listening" : "Start Listening",
+                                icon: config.hotkeyTestActive ? "stop.fill" : "play.fill",
+                                fill: config.hotkeyTestActive ? Color(red: 0.95, green: 0.38, blue: 0.36) : Color(red: 0.23, green: 0.58, blue: 0.96),
+                                foreground: .white
+                            ) {
+                                if config.hotkeyTestActive {
+                                    config.stopHotkeyTest()
+                                } else {
+                                    config.startHotkeyTest()
+                                }
+                            }
+
+                            StatusPill(
+                                text: config.hotkeyTestActive ? "Listening..." : "Idle",
+                                tone: config.hotkeyTestActive ? .success : .neutral
+                            )
+                        }
                     }
                 }
             }
 
             if !config.hotkeyTestLog.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Event Log")
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
-
-                    TextEditor(text: .constant(config.hotkeyTestLog))
-                        .font(.system(.caption, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .background(.quaternary.opacity(0.3))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .frame(minHeight: 150)
+                SettingsCard(title: "Hotkey Event Log", subtitle: "Recent global and local modifier events captured while the listener is active.") {
+                    logViewer(config.hotkeyTestLog, minHeight: 170, maxHeight: 220)
                 }
             }
 
-            Text("Look for fn=DOWN when you press the Fn key. If nothing appears, Accessibility permission may be missing.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-        }
-        .padding(20)
-    }
+            SettingsCard(title: "Daemon Log", subtitle: "The last 100 lines from daemon.log, useful for model loading, transcription, and permission issues.") {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        SoftActionButton(
+                            title: "Refresh",
+                            icon: "arrow.clockwise",
+                            fill: Color(red: 0.92, green: 0.95, blue: 0.99),
+                            foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
+                        ) {
+                            config.loadLogs()
+                        }
 
-    // MARK: - Logs Tab
+                        SoftActionButton(
+                            title: "Open in Finder",
+                            icon: "folder",
+                            fill: Color(red: 0.92, green: 0.95, blue: 0.99),
+                            foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
+                        ) {
+                            NSWorkspace.shared.activateFileViewerSelecting([config.logFileURL])
+                        }
 
-    private var logsTab: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Daemon Log (last 100 lines)")
-                    .font(.headline)
-                Spacer()
-                Button("Refresh") { config.loadLogs() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                Button("Open in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([config.logFileURL])
+                        Spacer()
+                    }
+
+                    logViewer(config.logContent.isEmpty ? "Loading..." : config.logContent, minHeight: 220, maxHeight: 320)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
 
-            if config.logContent.isEmpty {
-                VStack {
-                    Spacer()
-                    Text("Loading...")
-                        .foregroundStyle(.secondary)
-                    Spacer()
+            if !config.modelDownloadOutput.isEmpty {
+                SettingsCard(title: "Model Download Output", subtitle: "Command output from the latest model download run.") {
+                    logViewer(config.modelDownloadOutput, minHeight: 180, maxHeight: 240)
                 }
-                .frame(maxWidth: .infinity)
-            } else {
-                TextEditor(text: .constant(config.logContent))
-                    .font(.system(.caption, design: .monospaced))
-                    .scrollContentBackground(.hidden)
-                    .background(.quaternary.opacity(0.3))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 8)
             }
         }
-        .onAppear { config.loadLogs() }
+        .onAppear {
+            config.loadLogs()
+        }
     }
-
-    // MARK: - Bottom Bar
 
     private var bottomBar: some View {
-        HStack {
-            Button("Reveal Config") {
-                NSWorkspace.shared.activateFileViewerSelecting([config.configFileURL])
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-
-            Spacer()
-
+        HStack(spacing: 14) {
             if showSaveConfirmation {
-                Label("Saved! Reopen app to apply.", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.callout)
-                    .transition(.opacity)
+                miniStatus(
+                    text: "Saved locally. Reopen the app if a setting needs a fresh daemon start.",
+                    icon: "checkmark.circle.fill",
+                    tint: Color(red: 0.24, green: 0.74, blue: 0.49)
+                )
             }
 
             if showCopyConfirmation {
-                Label("Path copied", systemImage: "doc.on.doc.fill")
-                    .foregroundStyle(.blue)
-                    .font(.callout)
-                    .transition(.opacity)
+                miniStatus(
+                    text: "Model path copied.",
+                    icon: "doc.on.doc.fill",
+                    tint: Color(red: 0.23, green: 0.58, blue: 0.96)
+                )
             }
 
-            Button("Save") {
-                config.save()
-                withAnimation { showSaveConfirmation = true }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
-                    withAnimation { showSaveConfirmation = false }
-                }
+            Spacer()
+
+            Text("Changes are written to the local config and vocabulary files.")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color(red: 0.46, green: 0.51, blue: 0.59))
+
+            SoftActionButton(
+                title: "Save Changes",
+                icon: "square.and.arrow.down",
+                fill: Color(red: 0.23, green: 0.58, blue: 0.96),
+                foreground: .white
+            ) {
+                saveAllChanges()
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
             .keyboardShortcut("s", modifiers: .command)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
+    }
+
+    private func permissionSettingsRow(title: String, description: String, granted: Bool, action: @escaping () -> Void) -> some View {
+        SettingsRow(label: title, description: description) {
+            if granted {
+                StatusPill(text: "Granted", tone: .success)
+            } else {
+                SoftActionButton(
+                    title: "Open Settings",
+                    icon: "arrow.up.right.square",
+                    fill: Color(red: 0.92, green: 0.95, blue: 0.99),
+                    foreground: Color(red: 0.12, green: 0.16, blue: 0.24),
+                    action: action
+                )
+            }
+        }
+    }
+
+    private func providerBlurb(title: String, icon: String, accent: Color, body: String, isActive: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(accent)
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.09, green: 0.11, blue: 0.15))
+            }
+
+            Text(body)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                .fixedSize(horizontal: false, vertical: true)
+
+            StatusPill(text: isActive ? "Selected" : "Available", tone: isActive ? .info : .neutral)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isActive ? accent.opacity(0.09) : Color(red: 0.97, green: 0.98, blue: 0.99))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(isActive ? accent.opacity(0.28) : Color(red: 0.92, green: 0.94, blue: 0.97), lineWidth: 1)
+        )
+    }
+
+    private func miniStatus(text: String, icon: String, tint: Color) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+            Text(text)
+                .lineLimit(1)
+        }
+        .font(.system(size: 12.5, weight: .medium))
+        .foregroundStyle(tint)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(tint.opacity(0.10))
+        .clipShape(Capsule())
+    }
+
+    private func bannerCard(icon: String, title: String, message: String, tint: Color, dismiss: @escaping () -> Void) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .foregroundStyle(tint)
+                .font(.system(size: 18, weight: .semibold))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.11, green: 0.13, blue: 0.17))
+                Text(message)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color(red: 0.40, green: 0.45, blue: 0.54))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+
+            Button("Dismiss", action: dismiss)
+                .buttonStyle(.plain)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(tint)
+        }
+        .padding(16)
+        .background(tint.opacity(0.09))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func borderAction(title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                Text(title)
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color(red: 0.16, green: 0.18, blue: 0.24))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color(red: 0.97, green: 0.98, blue: 0.99))
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Color(red: 0.90, green: 0.93, blue: 0.96), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func subtleAction(title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            subtleActionLabel(title: title, icon: icon)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func subtleActionLabel(title: String, icon: String) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+            Text(title)
+                .font(.system(size: 12.5, weight: .semibold))
+        }
+        .foregroundStyle(Color(red: 0.16, green: 0.19, blue: 0.25))
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .background(Color(red: 0.96, green: 0.97, blue: 0.99))
+        .clipShape(Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color(red: 0.90, green: 0.93, blue: 0.96), lineWidth: 1)
+        )
+    }
+
+    private func valueCapsule(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12.5, weight: .medium))
+            .foregroundStyle(Color(red: 0.24, green: 0.28, blue: 0.34))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(Color(red: 0.96, green: 0.97, blue: 0.99))
+            .clipShape(Capsule())
     }
 
     private func copyModelPath() {
         config.copyModelPathToClipboard()
-        withAnimation { showCopyConfirmation = true }
+        withAnimation(.easeOut(duration: 0.2)) { showCopyConfirmation = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
-            withAnimation { showCopyConfirmation = false }
+            withAnimation(.easeIn(duration: 0.2)) { showCopyConfirmation = false }
         }
+    }
+
+    private func saveAllChanges() {
+        config.save()
+        config.savePersonalVocabulary()
+        withAnimation(.easeOut(duration: 0.2)) { showSaveConfirmation = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+            withAnimation(.easeIn(duration: 0.2)) { showSaveConfirmation = false }
+        }
+    }
+
+    private var correctionEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { config.correctionIsEnabled },
+            set: { config.setCorrectionEnabled($0) }
+        )
+    }
+
+    private var modelPathActions: some View {
+        HStack(spacing: 8) {
+            Button {
+                copyModelPath()
+            } label: {
+                PathPill(text: config.resolvedModelPath)
+            }
+            .buttonStyle(.plain)
+            .help("Copy model path")
+
+            subtleAction(title: "Open Folder", icon: "folder") {
+                config.openModelFolder()
+            }
+            .help("Open the model folder in Finder")
+        }
+    }
+
+    private var rowDivider: some View {
+        Divider()
+            .overlay(Color(red: 0.93, green: 0.94, blue: 0.97))
+            .padding(.leading, 2)
+    }
+
+    private func logViewer(_ text: String, minHeight: CGFloat, maxHeight: CGFloat) -> some View {
+        ScrollView {
+            Text(text)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(Color(red: 0.24, green: 0.27, blue: 0.32))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+                .padding(18)
+        }
+        .frame(minHeight: minHeight, maxHeight: maxHeight)
+        .background(Color(red: 0.97, green: 0.98, blue: 0.99))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
 }
 
-struct PersonalVocabularySheet: View {
-    @ObservedObject var config: ConfigManager
-    @Environment(\.dismiss) private var dismiss
-    @State private var enabled: Bool
-    @State private var model: String
-    @State private var apiKey: String
-    @State private var vocabulary: String
-
-    init(config: ConfigManager) {
-        self.config = config
-        _enabled = State(initialValue: config.correctionIsEnabled)
-        _model = State(initialValue: config.correctionModel)
-        _apiKey = State(initialValue: config.correctionApiKey)
-        _vocabulary = State(initialValue: config.personalVocabulary)
-    }
+private struct SidebarItemButton: View {
+    let title: String
+    let subtitle: String?
+    let icon: String
+    let isSelected: Bool
+    let action: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
+        Button(action: action) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .medium))
+                    .frame(width: 18, height: 18)
+                    .foregroundStyle(isSelected ? Color(red: 0.11, green: 0.14, blue: 0.20) : Color(red: 0.40, green: 0.46, blue: 0.55))
+
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Personal Vocabulary")
-                        .font(.title3.bold())
-                    Text("One common term per line. These terms are sent as hints to the correction model.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text(title)
+                        .font(.system(size: 15, weight: isSelected ? .semibold : .medium))
+                        .foregroundStyle(Color(red: 0.11, green: 0.14, blue: 0.20))
+
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(Color(red: 0.42, green: 0.48, blue: 0.58))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-                Spacer()
+
+                Spacer(minLength: 0)
             }
-
-            Toggle("Enable lightweight cloud correction", isOn: $enabled)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Model")
-                    .font(.subheadline.weight(.semibold))
-                TextField("glm-4.7-flash", text: $model)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("API Key")
-                    .font(.subheadline.weight(.semibold))
-                SecureField("zhipu api key", text: $apiKey)
-                    .textFieldStyle(.roundedBorder)
-                Text("Stored only in your local Open Flow config. Transcription text and vocabulary will be sent to BigModel when correction is enabled.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Common Terms")
-                    .font(.subheadline.weight(.semibold))
-                TextEditor(text: $vocabulary)
-                    .font(.system(.body, design: .monospaced))
-                    .scrollContentBackground(.hidden)
-                    .background(.quaternary.opacity(0.35))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .frame(minHeight: 220)
-                Text("Examples: Open Flow, SenseVoice, BlackHole, Groq, your teammates' names, project names.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            HStack {
-                Spacer()
-                Button("Cancel") {
-                    dismiss()
-                }
-                .buttonStyle(.bordered)
-
-                Button("Save") {
-                    config.setCorrectionEnabled(enabled)
-                    config.correctionModel = model
-                    config.correctionApiKey = apiKey
-                    config.personalVocabulary = vocabulary
-                    config.save()
-                    config.savePersonalVocabulary()
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(isSelected ? Color.white.opacity(0.55) : Color.clear)
+            )
         }
-        .padding(20)
-        .frame(minWidth: 560, minHeight: 520)
+        .buttonStyle(.plain)
+        .animation(.easeOut(duration: 0.14), value: isSelected)
     }
 }
 
-struct SettingsSection<Content: View>: View {
+private struct SettingsCard<Content: View>: View {
     let title: String
-    let icon: String
+    let subtitle: String
     @ViewBuilder let content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label(title, systemImage: icon)
-                .font(.headline)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color(red: 0.09, green: 0.11, blue: 0.15))
 
-            VStack(alignment: .leading, spacing: 10) {
+                Text(subtitle)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 0) {
                 content
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.5))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .padding(6)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color(red: 0.92, green: 0.94, blue: 0.97), lineWidth: 1)
+            )
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(red: 0.98, green: 0.99, blue: 1.0))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color(red: 0.93, green: 0.95, blue: 0.98), lineWidth: 1)
+        )
+    }
+}
+
+private struct SettingsRow<Control: View>: View {
+    let label: String
+    let description: String
+    @ViewBuilder let control: Control
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(label)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.09, green: 0.11, blue: 0.15))
+                Text(description)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 24)
+
+            control
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+    }
+}
+
+private enum PillTone {
+    case neutral
+    case info
+    case success
+    case warning
+
+    var foreground: Color {
+        switch self {
+        case .neutral: Color(red: 0.39, green: 0.45, blue: 0.53)
+        case .info: Color(red: 0.21, green: 0.47, blue: 0.88)
+        case .success: Color(red: 0.16, green: 0.58, blue: 0.37)
+        case .warning: Color(red: 0.76, green: 0.48, blue: 0.11)
+        }
+    }
+
+    var background: Color {
+        switch self {
+        case .neutral: Color(red: 0.95, green: 0.96, blue: 0.98)
+        case .info: Color(red: 0.90, green: 0.95, blue: 1.0)
+        case .success: Color(red: 0.90, green: 0.97, blue: 0.93)
+        case .warning: Color(red: 1.0, green: 0.95, blue: 0.88)
+        }
+    }
+}
+
+private struct StatusPill: View {
+    let text: String
+    let tone: PillTone
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 12.5, weight: .semibold))
+            .foregroundStyle(tone.foreground)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(tone.background)
+            .clipShape(Capsule())
+    }
+}
+
+private struct PathPill: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 12, weight: .semibold))
+            Text(text)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .font(.system(size: 12.5, weight: .medium))
+        .foregroundStyle(Color(red: 0.24, green: 0.28, blue: 0.34))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color(red: 0.96, green: 0.97, blue: 0.99))
+        .clipShape(Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color(red: 0.91, green: 0.93, blue: 0.96), lineWidth: 1)
+        )
+    }
+}
+
+private struct SoftActionButton: View {
+    let title: String
+    let icon: String
+    let fill: Color
+    let foreground: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 12.5, weight: .semibold))
+            }
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(fill)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
 
 #Preview {
     ContentView()
-        .frame(width: 520, height: 480)
+        .frame(width: 1160, height: 780)
 }

@@ -22,6 +22,19 @@ static SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
 const GITHUB_REPO: &str = "jqlong17/open-flow";
 
+#[cfg(target_os = "macos")]
+fn log_update_info(message: impl AsRef<str>) {
+    eprintln!("[Updater] {}", message.as_ref());
+}
+
+#[cfg(target_os = "macos")]
+fn log_update_error(context: &str, err: &anyhow::Error) {
+    eprintln!("[Updater] {}: {}", context, err);
+    for (idx, cause) in err.chain().enumerate().skip(1) {
+        eprintln!("[Updater]   cause[{idx}]: {}", cause);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 公共路径辅助
 // ─────────────────────────────────────────────────────────────────────────────
@@ -78,6 +91,7 @@ fn fetch_latest_macos_app_asset() -> Result<(String, String)> {
             "https://api.github.com/repos/{}/releases/latest",
             GITHUB_REPO
         );
+        log_update_info(format!("检查最新 release: {}", url));
         let resp = client
             .get(url)
             .send()
@@ -104,6 +118,11 @@ fn fetch_latest_macos_app_asset() -> Result<(String, String)> {
         .or_else(|| release.assets.iter().find(|a| a.name.ends_with(".app.zip")))
         .ok_or_else(|| anyhow::anyhow!("latest release 未找到 macOS .app.zip 资产"))?;
 
+    log_update_info(format!(
+        "最新版本 {}，选中更新资产 {} -> {}",
+        release.tag_name, asset.name, asset.browser_download_url
+    ));
+
     Ok((asset.browser_download_url.clone(), release.tag_name))
 }
 
@@ -126,7 +145,14 @@ where
         .build()
         .context("无法创建下载运行时")?;
 
-    rt.block_on(async {
+    log_update_info(format!(
+        "开始下载更新包 tag={} url={} path={}",
+        tag,
+        download_url,
+        zip_path.display()
+    ));
+
+    let download_result = rt.block_on(async {
         use tokio::io::AsyncWriteExt;
 
         let client = reqwest::Client::builder()
@@ -137,9 +163,9 @@ where
             .get(download_url)
             .send()
             .await
-            .context("下载更新包失败")?
+            .with_context(|| format!("下载更新包失败: {}", download_url))?
             .error_for_status()
-            .context("更新包下载返回错误状态")?;
+            .with_context(|| format!("更新包下载返回错误状态: {}", download_url))?;
 
         let total = resp.content_length();
         let mut file = tokio::fs::File::create(&zip_path)
@@ -147,7 +173,11 @@ where
             .with_context(|| format!("创建更新包文件失败: {}", zip_path.display()))?;
         let mut downloaded: u64 = 0;
 
-        while let Some(chunk) = resp.chunk().await.context("读取下载分块失败")? {
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .with_context(|| format!("读取下载分块失败: {}", download_url))?
+        {
             file.write_all(&chunk)
                 .await
                 .with_context(|| format!("写入更新包失败: {}", zip_path.display()))?;
@@ -156,8 +186,19 @@ where
         }
 
         file.flush().await.context("刷新更新包文件失败")?;
+        log_update_info(format!(
+            "更新包下载完成 tag={} bytes={} path={}",
+            tag,
+            downloaded,
+            zip_path.display()
+        ));
         Ok::<_, anyhow::Error>(())
-    })?;
+    });
+
+    if let Err(err) = download_result {
+        let _ = fs::remove_file(&zip_path);
+        return Err(err);
+    }
 
     Ok(zip_path)
 }
@@ -177,12 +218,15 @@ fn launch_app_replacement_worker(
 
     let script = format!(
         r#"#!/bin/bash
-set -e
+set -euo pipefail
+set -x
 PID={pid}
 ZIP={zip}
 APP_PATH={app}
 TMP_DIR=$(/usr/bin/mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
+
+echo "[Updater] worker start PID=$PID ZIP=$ZIP APP_PATH=$APP_PATH"
 
 for _ in $(seq 1 60); do
   if ! /bin/kill -0 "$PID" 2>/dev/null; then
@@ -220,6 +264,14 @@ fi
         zip = zip_q,
         app = app_q,
     );
+
+    log_update_info(format!(
+        "启动安装脚本 pid={} app={} zip={} script={}",
+        current_pid,
+        app_bundle.display(),
+        zip_path.display(),
+        script_path.display()
+    ));
 
     let mut file = fs::File::create(&script_path)
         .with_context(|| format!("无法创建更新脚本: {}", script_path.display()))?;
@@ -276,6 +328,10 @@ where
 {
     let (download_url, latest_tag) = fetch_latest_macos_app_asset()?;
     let current_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+    log_update_info(format!(
+        "当前版本 {}，最新版本 {}",
+        current_tag, latest_tag
+    ));
     if latest_tag == current_tag {
         return Ok(UpdateDownloadResult::UpToDate { latest_tag });
     }
@@ -298,6 +354,12 @@ fn start_install_downloaded_app_update(zip_path: &Path, current_pid: u32) -> Res
         )
     })?;
 
+    log_update_info(format!(
+        "准备安装已下载更新 zip={} app={} pid={}",
+        zip_path.display(),
+        app_bundle.display(),
+        current_pid
+    ));
     launch_app_replacement_worker(&app_bundle, zip_path, current_pid)?;
     println!("🚀 升级器已启动，Open Flow 即将退出并安装新版本");
     Ok(())
@@ -698,6 +760,7 @@ fn run_main_loop(
                     }
                     Ok(UpdateDownloadEvent::Completed(Err(err_msg))) => {
                         keep_rx = false;
+                        eprintln!("[Updater] 更新任务失败：{}", err_msg);
                         if let Some(t) = tray {
                             t.set_update_menu_text("检查更新");
                             t.set_update_menu_enabled(true);
@@ -818,7 +881,7 @@ fn run_main_loop(
 
                 std::thread::spawn(move || {
                     let mut last_percent: u8 = 0;
-                    let result = check_and_download_app_update(|downloaded, total| {
+                    let result = match check_and_download_app_update(|downloaded, total| {
                         if let Some(total_bytes) = total {
                             if total_bytes > 0 {
                                 let percent =
@@ -829,8 +892,13 @@ fn run_main_loop(
                                 }
                             }
                         }
-                    })
-                    .map_err(|e| e.to_string());
+                    }) {
+                        Ok(result) => Ok(result),
+                        Err(err) => {
+                            log_update_error("更新检查或下载失败", &err);
+                            Err(err.to_string())
+                        }
+                    };
                     let _ = tx.send(UpdateDownloadEvent::Completed(result));
                 });
             }
