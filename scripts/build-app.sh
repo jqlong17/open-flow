@@ -24,7 +24,24 @@ cargo build --release
 echo "Building settings app..."
 cd "$REPO_ROOT/settings-app"
 swift build -c release
+SETTINGS_BIN_DIR="$(swift build -c release --show-bin-path)"
 cd "$REPO_ROOT"
+
+SETTINGS_HELPER_PATH="$SETTINGS_BIN_DIR/OpenFlowSettings"
+if [[ ! -f "$SETTINGS_HELPER_PATH" ]]; then
+  LEGACY_SETTINGS_HELPER_PATH="$REPO_ROOT/settings-app/.build/release/OpenFlowSettings"
+  if [[ -f "$LEGACY_SETTINGS_HELPER_PATH" ]]; then
+    SETTINGS_HELPER_PATH="$LEGACY_SETTINGS_HELPER_PATH"
+  else
+    echo "Failed to locate OpenFlowSettings helper binary."
+    echo "Checked:"
+    echo "  $SETTINGS_HELPER_PATH"
+    echo "  $LEGACY_SETTINGS_HELPER_PATH"
+    exit 1
+  fi
+fi
+
+echo "Using settings helper: $SETTINGS_HELPER_PATH"
 
 echo "Creating .app structure..."
 rm -rf "$DIST_APP_DIR"
@@ -36,7 +53,7 @@ cp "$REPO_ROOT/target/release/$BINARY_NAME" "$DIST_APP_DIR/Contents/MacOS/open-f
 chmod +x "$DIST_APP_DIR/Contents/MacOS/open-flow"
 
 # Settings app helper
-cp "$REPO_ROOT/settings-app/.build/release/OpenFlowSettings" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
+cp "$SETTINGS_HELPER_PATH" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
 chmod +x "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
 
 # 图标
