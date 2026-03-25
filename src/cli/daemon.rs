@@ -916,6 +916,10 @@ fn run_main_loop(
             }
         }
 
+        if let Some(panel) = draft_panel {
+            panel.poll_aux_windows();
+        }
+
         if draft_mode_active.load(Ordering::SeqCst)
             && draft_panel
                 .map(|panel| panel.consume_close_requested())

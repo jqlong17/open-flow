@@ -19,8 +19,14 @@ mod platform {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::OnceLock;
 
+    use crate::draft_transform::DraftTransformPanel;
+
     const PANEL_WIDTH: f64 = 340.0;
+    const PANEL_EXPANDED_WIDTH: f64 = 860.0;
     const PANEL_HEIGHT: f64 = 410.0;
+    const PANEL_SPLIT_GAP: f64 = 10.0;
+    const PANEL_MIN_RIGHT_WIDTH: f64 = 300.0;
+    const PANEL_TOOLBAR_HEIGHT: f64 = 40.0;
     const NS_BACKING_STORE_BUFFERED: u64 = 2;
     const AUTORESIZE_WIDTH_HEIGHT: u64 = 18;
     const AUTORESIZE_BOTTOM_RIGHT: u64 = 33;
@@ -30,8 +36,15 @@ mod platform {
 
     pub struct DraftPanel {
         window: id,
+        content_view: id,
         text_view: id,
+        scroll_view: id,
         toggle_button: id,
+        transform_button: id,
+        clear_button: id,
+        copy_button: id,
+        transform_panel: Option<Box<DraftTransformPanel>>,
+        transform_expanded: Box<AtomicBool>,
         _action_target: id,
         _window_delegate: id,
         draft_mode_active: std::sync::Arc<AtomicBool>,
@@ -48,6 +61,15 @@ mod platform {
             if let Some(mut decl) = ClassDecl::new("OpenFlowDraftActionTarget", class!(NSObject)) {
                 decl.add_ivar::<id>("textView");
                 decl.add_ivar::<usize>("draftModePtr");
+                decl.add_ivar::<usize>("transformPanelPtr");
+                decl.add_ivar::<usize>("transformExpandedPtr");
+                decl.add_ivar::<id>("window");
+                decl.add_ivar::<id>("contentView");
+                decl.add_ivar::<id>("scrollView");
+                decl.add_ivar::<id>("toggleButton");
+                decl.add_ivar::<id>("transformButton");
+                decl.add_ivar::<id>("clearButton");
+                decl.add_ivar::<id>("copyButton");
                 decl.add_method(
                     sel!(clearClicked:),
                     clear_clicked as extern "C" fn(&Object, Sel, id),
@@ -59,6 +81,10 @@ mod platform {
                 decl.add_method(
                     sel!(copyAllClicked:),
                     copy_all_clicked as extern "C" fn(&Object, Sel, id),
+                );
+                decl.add_method(
+                    sel!(showTransformClicked:),
+                    show_transform_clicked as extern "C" fn(&Object, Sel, id),
                 );
                 decl.register() as *const Class as usize
             } else {
@@ -172,6 +198,140 @@ mod platform {
         }
     }
 
+    extern "C" fn show_transform_clicked(this: &Object, _cmd: Sel, _sender: id) {
+        unsafe {
+            let text_view: id = *this.get_ivar("textView");
+            let transform_panel_ptr: usize = *this.get_ivar("transformPanelPtr");
+            let transform_expanded_ptr: usize = *this.get_ivar("transformExpandedPtr");
+            if text_view == nil || transform_panel_ptr == 0 || transform_expanded_ptr == 0 {
+                return;
+            }
+
+            let current_text = text_view_string(text_view);
+            let transform_panel = transform_panel_ptr as *const DraftTransformPanel;
+            (*transform_panel).set_source_text(&current_text);
+
+            let transform_expanded = transform_expanded_ptr as *const AtomicBool;
+            let next = !(*transform_expanded).load(Ordering::SeqCst);
+            (*transform_expanded).store(next, Ordering::SeqCst);
+
+            let window: id = *this.get_ivar("window");
+            apply_transform_window_width(window, next);
+
+            relayout_from_action_target(this, next);
+        }
+    }
+
+    unsafe fn relayout_from_action_target(this: &Object, expanded: bool) {
+        let content_view: id = *this.get_ivar("contentView");
+        let scroll_view: id = *this.get_ivar("scrollView");
+        let toggle_button: id = *this.get_ivar("toggleButton");
+        let transform_button: id = *this.get_ivar("transformButton");
+        let clear_button: id = *this.get_ivar("clearButton");
+        let copy_button: id = *this.get_ivar("copyButton");
+        let transform_panel_ptr: usize = *this.get_ivar("transformPanelPtr");
+        let transform_panel = if transform_panel_ptr == 0 {
+            None
+        } else {
+            Some(&*(transform_panel_ptr as *const DraftTransformPanel))
+        };
+
+        relayout_draft_content(
+            content_view,
+            scroll_view,
+            toggle_button,
+            transform_button,
+            clear_button,
+            copy_button,
+            transform_panel,
+            expanded,
+        );
+    }
+
+    unsafe fn apply_transform_window_width(window: id, expanded: bool) {
+        if window == nil {
+            return;
+        }
+        let mut frame: NSRect = msg_send![window, frame];
+        if expanded {
+            if frame.size.width < PANEL_EXPANDED_WIDTH {
+                frame.size.width = PANEL_EXPANDED_WIDTH;
+                let _: () = msg_send![window, setFrame: frame display: YES animate: NO];
+            }
+        } else {
+            frame.size.width = PANEL_WIDTH;
+            let _: () = msg_send![window, setFrame: frame display: YES animate: NO];
+        }
+    }
+
+    unsafe fn relayout_draft_content(
+        content_view: id,
+        scroll_view: id,
+        toggle_button: id,
+        transform_button: id,
+        clear_button: id,
+        copy_button: id,
+        transform_panel: Option<&DraftTransformPanel>,
+        expanded: bool,
+    ) {
+        if content_view == nil {
+            return;
+        }
+
+        let content_frame: NSRect = msg_send![content_view, bounds];
+        let total_width = content_frame.size.width;
+        let total_height = content_frame.size.height;
+
+        let left_width = if expanded { PANEL_WIDTH } else { total_width };
+
+        let scroll_frame = NSRect::new(
+            NSPoint::new(0.0, PANEL_TOOLBAR_HEIGHT),
+            NSSize::new(left_width, total_height - PANEL_TOOLBAR_HEIGHT),
+        );
+        let _: () = msg_send![scroll_view, setFrame: scroll_frame];
+
+        let _: () = msg_send![
+            toggle_button,
+            setFrame: NSRect::new(NSPoint::new(18.0, 9.0), NSSize::new(92.0, 20.0))
+        ];
+        let _: () = msg_send![
+            transform_button,
+            setFrame: NSRect::new(
+                NSPoint::new(left_width - 214.0, 8.0),
+                NSSize::new(70.0, 24.0)
+            )
+        ];
+        let _: () = msg_send![
+            clear_button,
+            setFrame: NSRect::new(
+                NSPoint::new(left_width - 136.0, 8.0),
+                NSSize::new(56.0, 24.0)
+            )
+        ];
+        let _: () = msg_send![
+            copy_button,
+            setFrame: NSRect::new(
+                NSPoint::new(left_width - 72.0, 8.0),
+                NSSize::new(56.0, 24.0)
+            )
+        ];
+
+        if let Some(panel) = transform_panel {
+            if expanded {
+                let panel_x = left_width + PANEL_SPLIT_GAP;
+                let available_width = total_width - panel_x;
+                if available_width >= PANEL_MIN_RIGHT_WIDTH {
+                    panel.set_frame(panel_x, 0.0, available_width, total_height);
+                    panel.set_visible(true);
+                } else {
+                    panel.set_visible(false);
+                }
+            } else {
+                panel.set_visible(false);
+            }
+        }
+    }
+
     extern "C" fn toggle_draft_mode(this: &Object, _cmd: Sel, sender: id) {
         unsafe {
             let draft_mode_ptr: usize = *this.get_ivar("draftModePtr");
@@ -211,6 +371,18 @@ mod platform {
             setString: text_value
             forType: NSPasteboardTypeString
         ];
+    }
+
+    unsafe fn text_view_string(text_view: id) -> String {
+        let current: id = msg_send![text_view, string];
+        let current_str: *const i8 = msg_send![current, UTF8String];
+        if current_str.is_null() {
+            String::new()
+        } else {
+            std::ffi::CStr::from_ptr(current_str)
+                .to_string_lossy()
+                .into_owned()
+        }
     }
 
     unsafe fn add_edit_menu_item(menu: id, title: &str, action: Sel, key: &str) {
@@ -265,6 +437,8 @@ mod platform {
                     .unwrap_or_default();
                 let visible = Box::new(AtomicBool::new(false));
                 let close_requested = Box::new(AtomicBool::new(false));
+                let transform_panel = DraftTransformPanel::new(ui_language).map(Box::new);
+                let transform_expanded = Box::new(AtomicBool::new(false));
                 let screen: id = msg_send![class!(NSScreen), mainScreen];
                 let screen_frame: NSRect = msg_send![screen, frame];
                 let x = (screen_frame.size.width - PANEL_WIDTH) / 2.0;
@@ -302,12 +476,11 @@ mod platform {
 
                 let content_view: id = msg_send![window, contentView];
                 let content_frame: NSRect = msg_send![content_view, bounds];
-                let toolbar_height = 40.0f64;
                 let scroll_frame = NSRect::new(
-                    NSPoint::new(0.0, toolbar_height),
+                    NSPoint::new(0.0, PANEL_TOOLBAR_HEIGHT),
                     NSSize::new(
                         content_frame.size.width,
-                        content_frame.size.height - toolbar_height,
+                        content_frame.size.height - PANEL_TOOLBAR_HEIGHT,
                     ),
                 );
 
@@ -330,8 +503,8 @@ mod platform {
                 let _: () = msg_send![text_view, setFont: font];
 
                 let clear_button_frame = NSRect::new(
-                    NSPoint::new(content_frame.size.width - 188.0, 8.0),
-                    NSSize::new(80.0, 24.0),
+                    NSPoint::new(content_frame.size.width - 136.0, 8.0),
+                    NSSize::new(56.0, 24.0),
                 );
                 let clear_button: id = msg_send![class!(NSButton), alloc];
                 let clear_button: id = msg_send![clear_button, initWithFrame: clear_button_frame];
@@ -340,14 +513,25 @@ mod platform {
                 let _: () = msg_send![clear_button, setAutoresizingMask: AUTORESIZE_BOTTOM_RIGHT];
 
                 let copy_button_frame = NSRect::new(
-                    NSPoint::new(content_frame.size.width - 100.0, 8.0),
-                    NSSize::new(80.0, 24.0),
+                    NSPoint::new(content_frame.size.width - 72.0, 8.0),
+                    NSSize::new(56.0, 24.0),
                 );
                 let copy_button: id = msg_send![class!(NSButton), alloc];
                 let copy_button: id = msg_send![copy_button, initWithFrame: copy_button_frame];
                 let _: () = msg_send![copy_button, setTitle: NSString::alloc(nil).init_str(ui_language.copy())];
                 let _: () = msg_send![copy_button, setBezelStyle: 1i64];
                 let _: () = msg_send![copy_button, setAutoresizingMask: AUTORESIZE_BOTTOM_RIGHT];
+
+                let transform_button_frame = NSRect::new(
+                    NSPoint::new(content_frame.size.width - 214.0, 8.0),
+                    NSSize::new(70.0, 24.0),
+                );
+                let transform_button: id = msg_send![class!(NSButton), alloc];
+                let transform_button: id =
+                    msg_send![transform_button, initWithFrame: transform_button_frame];
+                let _: () = msg_send![transform_button, setTitle: NSString::alloc(nil).init_str(ui_language.pick("AI转换", "AI"))];
+                let _: () = msg_send![transform_button, setBezelStyle: 1i64];
+                let _: () = msg_send![transform_button, setAutoresizingMask: AUTORESIZE_BOTTOM_RIGHT];
 
                 let target_class = action_target_class();
                 let action_target: id = msg_send![target_class, new];
@@ -356,10 +540,28 @@ mod platform {
                     "draftModePtr",
                     std::sync::Arc::as_ptr(&draft_mode_active) as usize,
                 );
+                (&mut *action_target).set_ivar(
+                    "transformPanelPtr",
+                    transform_panel
+                        .as_deref()
+                        .map(|panel| panel as *const DraftTransformPanel as usize)
+                        .unwrap_or(0),
+                );
+                (&mut *action_target).set_ivar(
+                    "transformExpandedPtr",
+                    (&*transform_expanded as *const AtomicBool) as usize,
+                );
+                (&mut *action_target).set_ivar("window", window);
+                (&mut *action_target).set_ivar("contentView", content_view);
+                (&mut *action_target).set_ivar("scrollView", scroll_view);
+                (&mut *action_target).set_ivar("toggleButton", nil);
+                (&mut *action_target).set_ivar("transformButton", nil);
+                (&mut *action_target).set_ivar("clearButton", nil);
+                (&mut *action_target).set_ivar("copyButton", nil);
 
                 let toggle_button_frame = NSRect::new(
                     NSPoint::new(18.0, 9.0),
-                    NSSize::new(120.0, 20.0),
+                    NSSize::new(92.0, 20.0),
                 );
                 let toggle_button: id = msg_send![class!(NSButton), alloc];
                 let toggle_button: id = msg_send![toggle_button, initWithFrame: toggle_button_frame];
@@ -370,23 +572,51 @@ mod platform {
                 let _: () = msg_send![toggle_button, setToolTip: NSString::alloc(nil).init_str(ui_language.draft_panel_enabled_tooltip())];
                 let _: () = msg_send![toggle_button, setTarget: action_target];
                 let _: () = msg_send![toggle_button, setAction: sel!(toggleDraftMode:)];
+                (&mut *action_target).set_ivar("toggleButton", toggle_button);
 
                 let _: () = msg_send![clear_button, setTarget: action_target];
                 let _: () = msg_send![clear_button, setAction: sel!(clearClicked:)];
                 let _: () = msg_send![copy_button, setTarget: action_target];
                 let _: () = msg_send![copy_button, setAction: sel!(copyAllClicked:)];
+                let _: () = msg_send![transform_button, setTarget: action_target];
+                let _: () = msg_send![transform_button, setAction: sel!(showTransformClicked:)];
+                (&mut *action_target).set_ivar("transformButton", transform_button);
+                (&mut *action_target).set_ivar("clearButton", clear_button);
+                (&mut *action_target).set_ivar("copyButton", copy_button);
 
                 let _: () = msg_send![scroll_view, setDocumentView: text_view];
+                if let Some(panel) = transform_panel.as_deref() {
+                    panel.attach_to_parent(content_view);
+                    panel.set_visible(false);
+                }
                 let _: () = msg_send![content_view, addSubview: scroll_view];
                 let _: () = msg_send![content_view, addSubview: toggle_button];
+                let _: () = msg_send![content_view, addSubview: transform_button];
                 let _: () = msg_send![content_view, addSubview: clear_button];
                 let _: () = msg_send![content_view, addSubview: copy_button];
+                relayout_draft_content(
+                    content_view,
+                    scroll_view,
+                    toggle_button,
+                    transform_button,
+                    clear_button,
+                    copy_button,
+                    transform_panel.as_deref(),
+                    false,
+                );
                 let _: () = msg_send![window, orderOut: nil];
 
                 Some(Self {
                     window,
+                    content_view,
                     text_view,
+                    scroll_view,
                     toggle_button,
+                    transform_button,
+                    clear_button,
+                    copy_button,
+                    transform_panel,
+                    transform_expanded,
                     _action_target: action_target,
                     _window_delegate: window_delegate,
                     draft_mode_active,
@@ -411,6 +641,21 @@ mod platform {
 
         pub fn hide(&self) {
             unsafe {
+                self.transform_expanded.store(false, Ordering::SeqCst);
+                apply_transform_window_width(self.window, false);
+                relayout_draft_content(
+                    self.content_view,
+                    self.scroll_view,
+                    self.toggle_button,
+                    self.transform_button,
+                    self.clear_button,
+                    self.copy_button,
+                    self.transform_panel.as_deref(),
+                    false,
+                );
+                if let Some(transform_panel) = self.transform_panel.as_deref() {
+                    transform_panel.prepare_to_close();
+                }
                 if self.visible.swap(false, Ordering::SeqCst) {
                     let _: () = msg_send![self.window, orderOut: nil];
                 }
@@ -467,6 +712,25 @@ mod platform {
                 let _: () = msg_send![self.toggle_button, setState: if enabled { 1i64 } else { 0i64 }];
             }
         }
+
+        pub fn poll_aux_windows(&self) {
+            unsafe {
+                let expanded = self.transform_expanded.load(Ordering::SeqCst);
+                relayout_draft_content(
+                    self.content_view,
+                    self.scroll_view,
+                    self.toggle_button,
+                    self.transform_button,
+                    self.clear_button,
+                    self.copy_button,
+                    self.transform_panel.as_deref(),
+                    expanded,
+                );
+            }
+            if let Some(transform_panel) = self.transform_panel.as_deref() {
+                transform_panel.poll_events();
+            }
+        }
     }
 }
 
@@ -498,6 +762,8 @@ mod platform {
         pub fn clear(&self) {}
 
         pub fn set_draft_mode_enabled(&self, _enabled: bool) {}
+
+        pub fn poll_aux_windows(&self) {}
     }
 }
 

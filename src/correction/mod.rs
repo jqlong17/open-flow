@@ -1,17 +1,11 @@
 use anyhow::{Context, Result};
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::common::config::Config;
-
-const BIGMODEL_CHAT_COMPLETIONS_URL: &str = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
+use crate::llm::LlmClient;
 
 pub struct TextCorrector {
-    client: Client,
-    api_key: String,
-    model: String,
+    llm_client: LlmClient,
     vocabulary: Vec<String>,
 }
 
@@ -28,19 +22,16 @@ impl TextCorrector {
         }
 
         let vocabulary = load_personal_vocabulary().unwrap_or_default();
-
-        let client = match Client::builder().timeout(Duration::from_secs(20)).build() {
+        let llm_client = match LlmClient::new(api_key, config.resolved_correction_model()) {
             Ok(client) => client,
             Err(err) => {
-                warn!("创建文本纠错 HTTP client 失败: {}", err);
+                warn!("创建文本纠错 LLM client 失败: {}", err);
                 return None;
             }
         };
 
         Some(Self {
-            client,
-            api_key,
-            model: config.resolved_correction_model(),
+            llm_client,
             vocabulary,
         })
     }
@@ -53,71 +44,29 @@ impl TextCorrector {
 
         println!(
             "[Pipeline] llm_correction_start model={} raw_chars={} vocab_count={}",
-            self.model,
+            self.llm_client.model_name(),
             raw_text.chars().count(),
             self.vocabulary.len()
         );
         info!(
             "[Pipeline] stage=llm_correction_start model={} raw_chars={} vocab_count={}",
-            self.model,
+            self.llm_client.model_name(),
             raw_text.chars().count(),
             self.vocabulary.len()
         );
 
         let system_prompt = build_system_prompt(&self.vocabulary);
-        let request = BigModelChatRequest {
-            model: self.model.clone(),
-            messages: vec![
-                ChatMessage {
-                    role: "system".into(),
-                    content: system_prompt,
-                },
-                ChatMessage {
-                    role: "user".into(),
-                    content: raw_text.to_string(),
-                },
-            ],
-            stream: false,
-            temperature: Some(0.1),
-            do_sample: Some(false),
-            max_tokens: Some(1024),
-            thinking: Some(ThinkingConfig {
-                r#type: "disabled".into(),
-                clear_thinking: true,
-            }),
-        };
-
-        let response = self
-            .client
-            .post(BIGMODEL_CHAT_COMPLETIONS_URL)
-            .bearer_auth(&self.api_key)
-            .json(&request)
-            .send()
+        let corrected = self
+            .llm_client
+            .generate(&system_prompt, raw_text)
             .await
             .context("调用 BigModel 纠错接口失败")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("BigModel 纠错失败: {} {}", status, body);
-        }
-
-        let parsed: BigModelChatResponse = response
-            .json()
-            .await
-            .context("解析 BigModel 纠错响应失败")?;
-
-        let corrected = parsed
-            .choices
-            .first()
-            .map(|choice| choice.message.content.trim().to_string())
-            .unwrap_or_default();
 
         if corrected.is_empty() {
             warn!("BigModel 纠错返回空结果，回退原文");
             println!(
                 "[Pipeline] llm_correction_complete model={} changed=false raw_chars={} corrected_chars={} vocab_count={}",
-                self.model,
+                self.llm_client.model_name(),
                 raw_text.chars().count(),
                 raw_text.chars().count(),
                 self.vocabulary.len()
@@ -127,7 +76,7 @@ impl TextCorrector {
 
         println!(
             "[Pipeline] llm_correction_complete model={} changed={} raw_chars={} corrected_chars={} vocab_count={}",
-            self.model,
+            self.llm_client.model_name(),
             corrected != raw_text,
             raw_text.chars().count(),
             corrected.chars().count(),
@@ -143,7 +92,7 @@ impl TextCorrector {
     }
 
     pub fn model_name(&self) -> &str {
-        &self.model
+        self.llm_client.model_name()
     }
 
     pub fn vocabulary_count(&self) -> usize {
@@ -210,46 +159,4 @@ fn build_system_prompt(vocabulary: &[String]) -> String {
     } else {
         format!("{}\n\n个人词表：\n{}", template, vocab_block)
     }
-}
-
-#[derive(Serialize)]
-struct BigModelChatRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
-    stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    do_sample: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thinking: Option<ThinkingConfig>,
-}
-
-#[derive(Serialize)]
-struct ChatMessage {
-    role: String,
-    content: String,
-}
-
-#[derive(Serialize)]
-struct ThinkingConfig {
-    r#type: String,
-    clear_thinking: bool,
-}
-
-#[derive(Deserialize)]
-struct BigModelChatResponse {
-    choices: Vec<BigModelChoice>,
-}
-
-#[derive(Deserialize)]
-struct BigModelChoice {
-    message: BigModelMessage,
-}
-
-#[derive(Deserialize)]
-struct BigModelMessage {
-    content: String,
 }
