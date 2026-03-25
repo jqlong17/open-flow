@@ -2,22 +2,24 @@ import SwiftUI
 
 private enum SettingsPane: String, CaseIterable, Identifiable {
     case general
-    case vocabulary
     case recognition
     case models
+    case vocabulary
+    case meetings
     case permissions
-    case diagnostics
+    case logs
 
     var id: String { rawValue }
 
     func title(isEnglish: Bool) -> String {
         switch self {
         case .general: isEnglish ? "General" : "通用"
-        case .vocabulary: isEnglish ? "Vocabulary" : "词表"
         case .recognition: isEnglish ? "Recognition" : "识别"
         case .models: isEnglish ? "Models" : "模型"
+        case .vocabulary: isEnglish ? "Vocabulary" : "个人热词"
+        case .meetings: isEnglish ? "Meetings" : "会议"
         case .permissions: isEnglish ? "Permissions" : "权限"
-        case .diagnostics: isEnglish ? "Diagnostics" : "诊断"
+        case .logs: isEnglish ? "Logs" : "日志"
         }
     }
 
@@ -25,34 +27,37 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .general:
             isEnglish ? "Tune the core voice input behavior and how text is cleaned before paste." : "调整语音输入核心行为，以及粘贴前的文本处理方式。"
-        case .vocabulary:
-            isEnglish ? "Manage correction settings and the terms Open Flow should preserve across transcripts." : "管理纠错设置，以及 Open Flow 在转写时应优先保留的词语。"
         case .recognition:
-            isEnglish ? "Choose between local SenseVoice and Groq Whisper, then adjust how transcription runs." : "在本地 SenseVoice 和 Groq Whisper 之间切换，并调整转写方式。"
+            isEnglish ? "Choose how audio becomes text, then tune the transcription provider and language behavior." : "配置音频如何转成文本，并调整识别引擎与语言行为。"
         case .models:
-            isEnglish ? "Manage local model presets, download progress, and the storage path on this Mac." : "管理本机模型预设、下载进度和存储路径。"
+            isEnglish ? "Manage both ASR and LLM models in one place, including downloads, local paths, and API access." : "统一管理 ASR 和 LLM 模型，包括下载、本地路径和 API 访问。"
+        case .vocabulary:
+            isEnglish ? "Manage personal hotwords and the correction prompt without mixing in model setup." : "只管理个人热词和纠错提示词，不再混入模型设置。"
+        case .meetings:
+            isEnglish ? "Keep meeting capture status, saved sessions, and troubleshooting tools together." : "把会议采集状态、会话记录和会议排障工具放在一起。"
         case .permissions:
-            isEnglish ? "Check the macOS permissions Open Flow needs for recording, hotkeys, and text injection." : "检查 Open Flow 录音、热键和文字注入所需的 macOS 权限。"
-        case .diagnostics:
-            isEnglish ? "Inspect hotkey events, daemon logs, and download output when something feels off." : "出现异常时查看热键事件、daemon 日志和下载输出。"
+            isEnglish ? "Check the macOS permissions Open Flow needs for recording, meeting capture, hotkeys, and text injection." : "检查 Open Flow 录音、会议采集、热键和文字注入所需的 macOS 权限。"
+        case .logs:
+            isEnglish ? "Inspect daemon output, hotkey events, downloads, and developer performance logs when something feels off." : "出现异常时查看 daemon 输出、热键事件、下载记录和开发性能日志。"
         }
     }
 
     var icon: String {
         switch self {
         case .general: "slider.horizontal.3"
-        case .vocabulary: "book.closed"
         case .recognition: "waveform.and.mic"
         case .models: "shippingbox"
+        case .vocabulary: "text.badge.star"
+        case .meetings: "person.2.wave.2"
         case .permissions: "lock.shield"
-        case .diagnostics: "stethoscope"
+        case .logs: "doc.text.magnifyingglass"
         }
     }
 }
 
 struct ContentView: View {
     @StateObject private var config = ConfigManager()
-    @State private var selectedPane: SettingsPane = .recognition
+    @State private var selectedPane: SettingsPane = .general
     @State private var showSaveConfirmation = false
     @State private var showCopyConfirmation = false
 
@@ -67,6 +72,21 @@ struct ContentView: View {
 
     private func tr(_ zh: String, _ en: String) -> String {
         isEnglish ? en : zh
+    }
+
+    private var revealActionTitle: String {
+        switch selectedPane {
+        case .vocabulary:
+            return tr("显示词表", "Reveal Vocabulary")
+        case .models:
+            return tr("打开模型目录", "Open Model Folder")
+        case .meetings:
+            return tr("打开会议目录", "Open Meetings Folder")
+        case .logs:
+            return tr("显示日志", "Reveal Log")
+        default:
+            return tr("显示配置", "Reveal Config")
+        }
     }
 
     var body: some View {
@@ -92,6 +112,8 @@ struct ContentView: View {
         .onAppear {
             config.checkModelReady()
             config.refreshInputDevices()
+            config.refreshSystemAudioDiagnostics()
+            config.refreshMeetingSessionsOverview()
         }
         .onChange(of: config.provider) { newValue in
             if newValue == "local" {
@@ -217,15 +239,23 @@ struct ContentView: View {
                 borderAction(title: tr("刷新", "Refresh"), icon: "arrow.clockwise") {
                     config.refreshStatus()
                     config.refreshPermissions()
+                    config.refreshSystemAudioDiagnostics()
+                    config.refreshMeetingSessionsOverview()
                     config.checkModelReady()
-                    if selectedPane == .diagnostics {
+                    if selectedPane == .logs {
                         config.loadLogs()
                     }
                 }
 
-                borderAction(title: selectedPane == .vocabulary ? tr("显示词表", "Reveal Vocabulary") : tr("显示配置", "Reveal Config"), icon: "folder") {
+                borderAction(title: revealActionTitle, icon: "folder") {
                     if selectedPane == .vocabulary {
                         NSWorkspace.shared.activateFileViewerSelecting([config.personalVocabularyFileURL])
+                    } else if selectedPane == .models {
+                        config.openModelFolder()
+                    } else if selectedPane == .meetings {
+                        config.openMeetingSessionsFolder()
+                    } else if selectedPane == .logs {
+                        NSWorkspace.shared.activateFileViewerSelecting([config.logFileURL])
                     } else {
                         NSWorkspace.shared.activateFileViewerSelecting([config.configFileURL])
                     }
@@ -239,16 +269,18 @@ struct ContentView: View {
         switch selectedPane {
         case .general:
             generalPage
-        case .vocabulary:
-            vocabularyPage
         case .recognition:
             recognitionPage
         case .models:
             modelsPage
+        case .vocabulary:
+            vocabularyPage
+        case .meetings:
+            meetingsPage
         case .permissions:
             permissionsPage
-        case .diagnostics:
-            diagnosticsPage
+        case .logs:
+            logsPage
         }
     }
 
@@ -495,19 +527,9 @@ struct ContentView: View {
             }
 
             if config.provider == "local" {
-                SettingsCard(title: tr("本地引擎详情", "Local Provider Details"), subtitle: tr("调整本地模型预设，并快速查看是否已就绪。", "Tune the local model preset and inspect its readiness at a glance.")) {
+                SettingsCard(title: tr("本地识别说明", "Local Recognition Notes"), subtitle: tr("本地识别本身不需要云端凭据。模型下载、模型路径和预设切换统一放在 Models 页面。", "Local recognition does not require cloud credentials. Model downloads, paths, and preset switching are now managed in Models.")) {
                     VStack(spacing: 0) {
-                        SettingsRow(label: tr("预设", "Preset"), description: tr("量化版更轻量，FP16 更偏向高保真。", "Quantized is lighter, while FP16 aims for higher fidelity.")) {
-                            Picker("", selection: $config.modelPreset) {
-                                Text(tr("量化版", "Quantized")).tag("quantized")
-                                Text("FP16").tag("fp16")
-                            }
-                            .pickerStyle(.segmented)
-                            .frame(width: 210)
-                        }
-
-                        rowDivider
-                        SettingsRow(label: tr("模型状态", "Model Status"), description: tr("Open Flow 会从下方路径使用当前选中的预设。", "Open Flow will use the selected preset from the path below.")) {
+                        SettingsRow(label: tr("当前状态", "Current Status"), description: tr("这里只提示本地识别是否已经具备运行条件。具体模型管理请前往 Models。", "This only summarizes whether local recognition is ready to run. Visit Models for detailed model management.")) {
                             StatusPill(
                                 text: config.modelDownloading ? tr("下载中", "Downloading") : (config.modelReady ? tr("已就绪", "Ready") : tr("未下载", "Not downloaded")),
                                 tone: config.modelDownloading ? .info : (config.modelReady ? .success : .warning)
@@ -515,8 +537,8 @@ struct ContentView: View {
                         }
 
                         rowDivider
-                        SettingsRow(label: tr("模型路径", "Model Path"), description: tr("点击可复制实际路径，或在需要时用 Finder 打开对应文件夹。", "Click to copy the resolved path, or open the folder in Finder when you need to inspect the local preset.")) {
-                            modelPathActions
+                        SettingsRow(label: tr("模型管理", "Model Management"), description: tr("如果模型还没准备好，或者你想切换量化版 / FP16，请到 Models 页面继续操作。", "If the model is not ready yet, or you want to switch between Quantized / FP16, continue in Models.")) {
+                            valueCapsule(tr("在 Models 中管理", "Manage in Models"))
                         }
                     }
                 }
@@ -560,7 +582,7 @@ struct ContentView: View {
 
     private var modelsPage: some View {
         VStack(alignment: .leading, spacing: pageSpacing) {
-            SettingsCard(title: tr("模型存储", "Model Storage"), subtitle: tr("让本地模型资产保持清晰可见，便于安装和排查。", "Keep the local model assets healthy and visible so setup stays predictable.")) {
+            SettingsCard(title: tr("ASR 模型", "ASR Models"), subtitle: tr("统一管理本地语音识别模型的预设、下载状态、路径和重新下载动作。", "Manage local speech-recognition presets, download status, paths, and re-download actions in one place.")) {
                 VStack(spacing: 0) {
                     SettingsRow(label: tr("预设", "Preset"), description: tr("Open Flow 会在 Application Support 下分别存储量化版和 FP16。", "Open Flow stores quantized and FP16 in separate folders under Application Support.")) {
                         Picker("", selection: $config.modelPreset) {
@@ -614,8 +636,13 @@ struct ContentView: View {
                 }
             }
 
-            SettingsCard(title: tr("LLM 配置", "LLM Configuration"), subtitle: tr("把大模型作为独立能力进行管理，便于后续扩展语音纠错之外的更多能力。", "Manage large-language-model settings as a standalone capability so Open Flow can grow beyond post-ASR correction.")) {
+            SettingsCard(title: tr("LLM 模型", "LLM Models"), subtitle: tr("统一管理大语言模型能力，包括模型选择和 API 访问。当前用于纠错，也会作为未来其他 AI 功能的共享入口。", "Manage large-language-model capability in one place, including model choice and API access. It powers correction today and future AI features later.")) {
                 VStack(spacing: 0) {
+                    SettingsRow(label: tr("提供方", "Provider"), description: tr("当前内置的是智谱大模型接入方式。后续如果增加更多提供方，也会继续放在这里统一管理。", "Zhipu is the built-in provider for now. If more providers are added later, they will also live here.")) {
+                        valueCapsule("Zhipu BigModel")
+                    }
+
+                    rowDivider
                     SettingsRow(label: tr("模型", "Model"), description: tr("当前用于纠错，也会作为未来其他 LLM 功能的统一入口。", "Used for correction today, and designed to become the shared entry for future LLM-powered features.")) {
                         Picker("", selection: $config.correctionModel) {
                             ForEach(ConfigManager.correctionModels, id: \.self) { model in
@@ -651,21 +678,6 @@ struct ContentView: View {
                 }
             }
 
-            if !config.modelDownloadOutput.isEmpty {
-                SettingsCard(title: tr("下载输出", "Download Output"), subtitle: tr("原始命令输出，可用于排查下载问题并确认上一次发生了什么。", "Raw command output for debugging downloads and confirming what happened last.")) {
-                    ScrollView {
-                        Text(config.modelDownloadOutput)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(Color(red: 0.25, green: 0.28, blue: 0.34))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-                            .padding(18)
-                    }
-                    .frame(minHeight: 180, maxHeight: 260)
-                    .background(Color(red: 0.97, green: 0.98, blue: 0.99))
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                }
-            }
         }
     }
 
@@ -695,6 +707,14 @@ struct ContentView: View {
                         granted: config.microphoneGranted,
                         action: config.openMicrophoneSettings
                     )
+
+                    rowDivider
+                    permissionSettingsRow(
+                        title: tr("屏幕录制", "Screen Recording"),
+                        description: tr("桌面音频和会议模式需要它来采集系统播放出来的声音。", "Desktop audio and meeting mode need this to capture sound that macOS is playing out."),
+                        granted: config.screenRecordingGranted,
+                        action: config.openScreenRecordingSettings
+                    )
                 }
             }
 
@@ -713,31 +733,110 @@ struct ContentView: View {
         }
     }
 
-    private var diagnosticsPage: some View {
+    private var meetingsPage: some View {
         VStack(alignment: .leading, spacing: pageSpacing) {
-            #if OPENFLOW_PERF_DEV_UI
-            SettingsCard(title: tr("性能日志", "Performance Logging"), subtitle: tr("持久化保存会话级耗时和进程资源快照，便于持续分析语音链路性能。", "Persist session-level timing and process resource snapshots so we can profile the voice pipeline over time.")) {
+            SettingsCard(title: tr("会议模式概览", "Meeting Mode Overview"), subtitle: tr("把当前录音模式、系统音频授权和会议记录保存状态放在一起，便于快速确认会议链路是否准备好了。", "Keep the current recording mode, system-audio access, and saved-session status together so you can quickly verify that meeting capture is ready.")) {
                 VStack(spacing: 0) {
-                    SettingsRow(label: tr("性能模式", "Performance Mode"), description: tr("启用后，Open Flow 会写入带有端到端耗时、CPU 和内存检查点的 JSONL 性能日志。", "When enabled, Open Flow writes JSONL performance logs with end-to-end timing, CPU, and memory checkpoints.")) {
-                        Toggle("", isOn: performanceLoggingEnabledBinding)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
+                    SettingsRow(label: tr("当前录音模式", "Current Recording Mode"), description: tr("这是 Open Flow 现在会采用的录音策略。会议场景建议使用“桌面音频 + 麦克风（会议）”。", "This is the recording strategy Open Flow will use right now. For meetings, “Desktop Audio + Microphone (Meeting)” is recommended.")) {
+                        valueCapsule(config.resolvedCaptureModeLabel)
+                    }
+
+                    if selectedCaptureModeUsesMicrophone {
+                        rowDivider
+                        SettingsRow(label: tr("当前麦克风输入", "Current Microphone Input"), description: tr("会议模式或麦克风模式下会使用这里显示的输入设备。", "Meeting mode or microphone mode will use the input device shown here.")) {
+                            valueCapsule(config.resolvedInputSourceLabel)
+                        }
                     }
 
                     rowDivider
-                    SettingsRow(label: tr("日志位置", "Log Location"), description: tr("与 daemon.log 分开存储，便于筛选和归档性能分析数据。", "Stored separately from daemon.log so performance analysis stays easy to filter and archive.")) {
-                        HStack(spacing: 8) {
-                            valueCapsule(config.performanceLogDirectoryURL.path)
-                            subtleAction(title: tr("打开文件夹", "Open Folder"), icon: "folder") {
-                                NSWorkspace.shared.open(config.performanceLogDirectoryURL)
+                    SettingsRow(label: tr("系统音频授权", "System Audio Access"), description: tr("会议模式是否已经获得 macOS 的屏幕录制授权。未授权时将无法采集桌面声音。", "Whether meeting mode already has macOS screen recording access. Without it, desktop audio cannot be captured.")) {
+                        HStack(spacing: 10) {
+                            StatusPill(
+                                text: config.systemAudioScreenRecordingGranted ? tr("已授权", "Granted") : tr("未授权", "Not Granted"),
+                                tone: config.systemAudioScreenRecordingGranted ? .success : .warning
+                            )
+                            SoftActionButton(
+                                title: tr("打开设置", "Open Settings"),
+                                icon: "arrow.up.right.square",
+                                fill: Color(red: 0.92, green: 0.95, blue: 0.99),
+                                foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
+                            ) {
+                                config.openScreenRecordingSettings()
                             }
                         }
                     }
                 }
             }
-            #endif
 
-            SettingsCard(title: tr("系统音频实验诊断", "System Audio Experimental Diagnostics"), subtitle: tr("这里专门用于权限检查、探测和排障。正式的录音模式选择已经合并到上方的通用设置中。", "This area is now dedicated to permissions, probing, and troubleshooting. The main recording-mode selection has been moved into the general settings above.")) {
+            SettingsCard(title: tr("会议记录", "Meeting Sessions"), subtitle: tr("查看会议模式的落盘位置和最近一次会话，确认持续分段、持续转写和持续落盘是否真的发生了。", "Inspect where meeting-mode output is stored and what the latest session looks like, so you can confirm continuous segmentation, transcription, and persistence are actually happening.")) {
+                VStack(spacing: 0) {
+                    SettingsRow(label: tr("保存位置", "Storage Location"), description: tr("会议模式的 `session.json`、`transcripts.jsonl`、`merged_transcript.md` 和分段音频都会写到这里。", "Meeting mode writes `session.json`, `transcripts.jsonl`, `merged_transcript.md`, and segmented audio here.")) {
+                        HStack(spacing: 8) {
+                            valueCapsule(config.meetingSessionsDirectoryURL.path)
+                            subtleAction(title: tr("打开文件夹", "Open Folder"), icon: "folder") {
+                                config.openMeetingSessionsFolder()
+                            }
+                        }
+                    }
+
+                    rowDivider
+                    SettingsRow(label: tr("已保存会话", "Saved Sessions"), description: tr("当前这台 Mac 上已经累计保存的会议会话数量。", "The total number of meeting sessions currently saved on this Mac.")) {
+                        StatusPill(
+                            text: "\(config.meetingSessionCount) \(tr("个会话", "sessions"))",
+                            tone: config.meetingSessionCount > 0 ? .info : .neutral
+                        )
+                    }
+
+                    rowDivider
+                    SettingsRow(label: tr("最近一次会话", "Latest Session"), description: tr("这里会显示最近一次写入的会议目录和当前状态。", "This shows the most recently written meeting directory and its current status.")) {
+                        VStack(alignment: .trailing, spacing: 8) {
+                            if config.latestMeetingSessionName.isEmpty {
+                                Text(config.latestMeetingSessionStatus)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                                    .frame(width: 360, alignment: .trailing)
+                                    .multilineTextAlignment(.trailing)
+                            } else {
+                                HStack(spacing: 8) {
+                                    StatusPill(
+                                        text: config.latestMeetingSessionHasTranscript ? tr("已生成合并稿", "Merged Transcript Ready") : tr("正在整理中", "Still Writing"),
+                                        tone: config.latestMeetingSessionHasTranscript ? .success : .warning
+                                    )
+                                    if !config.latestMeetingSessionUpdatedAt.isEmpty {
+                                        StatusPill(text: config.latestMeetingSessionUpdatedAt, tone: .neutral)
+                                    }
+                                }
+
+                                Text(config.latestMeetingSessionName)
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                    .foregroundStyle(Color(red: 0.15, green: 0.18, blue: 0.24))
+                                    .frame(width: 360, alignment: .trailing)
+                                    .multilineTextAlignment(.trailing)
+
+                                Text(config.latestMeetingSessionStatus)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                                    .frame(width: 360, alignment: .trailing)
+                                    .multilineTextAlignment(.trailing)
+
+                                subtleAction(title: tr("显示最近会话", "Reveal Latest Session"), icon: "folder.badge.gearshape") {
+                                    config.openLatestMeetingSession()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            config.refreshSystemAudioDiagnostics()
+            config.refreshMeetingSessionsOverview()
+        }
+    }
+
+    private var logsPage: some View {
+        VStack(alignment: .leading, spacing: pageSpacing) {
+            SettingsCard(title: tr("会议模式排障", "Meeting Capture Diagnostics"), subtitle: tr("这里专门用于权限检查、探测和排障。正式的录音模式选择已经合并到上方的通用设置中。", "This area is dedicated to permissions, probing, and troubleshooting. The main recording-mode selection now lives in the general settings above.")) {
                 VStack(spacing: 0) {
                     SettingsRow(label: tr("屏幕录制权限", "Screen Recording Permission"), description: tr("ScreenCaptureKit 枚举和捕获系统音频前，需要先获得 macOS 的屏幕录制授权。", "ScreenCaptureKit needs macOS screen recording permission before it can enumerate or capture system audio.")) {
                         HStack(spacing: 10) {
@@ -767,33 +866,6 @@ struct ContentView: View {
                     }
 
                     rowDivider
-                    SettingsRow(label: tr("可捕获对象", "Shareable Targets"), description: tr("用于验证当前系统中哪些显示器和应用可以作为 ScreenCaptureKit 的音频捕获对象。", "Use this to verify which displays and applications are currently available as ScreenCaptureKit capture targets.")) {
-                        VStack(alignment: .trailing, spacing: 8) {
-                            HStack(spacing: 8) {
-                                StatusPill(
-                                    text: "\(config.systemAudioDisplays.count) \(tr("个显示器", "displays"))",
-                                    tone: .info
-                                )
-                                StatusPill(
-                                    text: "\(config.systemAudioApplications.count) \(tr("个应用", "apps"))",
-                                    tone: .info
-                                )
-                                StatusPill(
-                                    text: "\(config.systemAudioWindowCount) \(tr("个窗口", "windows"))",
-                                    tone: .neutral
-                                )
-                            }
-
-                            if !config.systemAudioStatus.isEmpty {
-                                Text(config.systemAudioStatus)
-                                    .font(.system(size: 11.5, weight: .medium))
-                                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
-                                    .frame(width: 360, alignment: .trailing)
-                                    .multilineTextAlignment(.trailing)
-                            }
-                        }
-                    }
-
                     SettingsRow(label: tr("桌面音频探测", "Desktop Audio Probe"), description: tr("运行一个 3 秒钟的 ScreenCaptureKit 桌面音频探测，验证系统是否真的开始返回音频回调。", "Run a 3-second ScreenCaptureKit desktop-audio probe to verify that the system is actually returning audio callbacks.")) {
                         VStack(alignment: .trailing, spacing: 8) {
                             SoftActionButton(
@@ -815,91 +887,32 @@ struct ContentView: View {
                             }
                         }
                     }
+                }
+            }
+
+            #if OPENFLOW_PERF_DEV_UI
+            SettingsCard(title: tr("性能日志", "Performance Logging"), subtitle: tr("持久化保存会话级耗时和进程资源快照，便于持续分析语音链路性能。", "Persist session-level timing and process resource snapshots so we can profile the voice pipeline over time.")) {
+                VStack(spacing: 0) {
+                    SettingsRow(label: tr("性能模式", "Performance Mode"), description: tr("启用后，Open Flow 会写入带有端到端耗时、CPU 和内存检查点的 JSONL 性能日志。", "When enabled, Open Flow writes JSONL performance logs with end-to-end timing, CPU, and memory checkpoints.")) {
+                        Toggle("", isOn: performanceLoggingEnabledBinding)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                    }
 
                     rowDivider
-                    SettingsRow(label: tr("应用音频探测", "Application Audio Probe"), description: tr("选择一个当前可捕获的应用，再运行 3 秒探测，确认单应用音频模式的回调链路是否可用。", "Pick a currently shareable application and run a 3-second probe to verify the callback path for application-audio mode.")) {
-                        VStack(alignment: .trailing, spacing: 8) {
-                            Picker("", selection: $config.selectedSystemAudioApplicationPID) {
-                                Text(tr("请选择应用", "Select an app")).tag("")
-                                ForEach(config.systemAudioApplications) { app in
-                                    Text("\(app.applicationName) (pid \(app.processID))").tag(String(app.processID))
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .labelsHidden()
-                            .frame(width: 320)
-
-                            SoftActionButton(
-                                title: tr("运行应用探测", "Run App Probe"),
-                                icon: "app.connected.to.app.below.fill",
-                                fill: Color(red: 0.92, green: 0.95, blue: 0.99),
-                                foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
-                            ) {
-                                config.runApplicationSystemAudioProbe()
-                            }
-                            .disabled(
-                                config.systemAudioProbeRunning
-                                    || !config.systemAudioScreenRecordingGranted
-                                    || config.selectedSystemAudioApplicationPID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            )
-
-                            if !config.systemAudioApplicationProbeSummary.isEmpty {
-                                Text(config.systemAudioApplicationProbeSummary)
-                                    .font(.system(size: 11.5, weight: .medium))
-                                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
-                                    .frame(width: 360, alignment: .trailing)
-                                    .multilineTextAlignment(.trailing)
+                    SettingsRow(label: tr("日志位置", "Log Location"), description: tr("与 daemon.log 分开存储，便于筛选和归档性能分析数据。", "Stored separately from daemon.log so performance analysis stays easy to filter and archive.")) {
+                        HStack(spacing: 8) {
+                            valueCapsule(config.performanceLogDirectoryURL.path)
+                            subtleAction(title: tr("打开文件夹", "Open Folder"), icon: "folder") {
+                                NSWorkspace.shared.open(config.performanceLogDirectoryURL)
                             }
                         }
                     }
                 }
             }
+            #endif
 
-            if !config.systemAudioDisplays.isEmpty || !config.systemAudioApplications.isEmpty {
-                SettingsCard(title: tr("系统音频候选对象", "System Audio Candidates"), subtitle: tr("这里展示 helper 当前枚举到的候选显示器与应用，便于选择应用音频目标并排查可捕获范围。", "This shows the helper's current display and application candidates so you can choose an application-audio target and inspect what is actually shareable.")) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        if !config.systemAudioDisplays.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(tr("显示器", "Displays"))
-                                    .font(.system(size: 13.5, weight: .semibold))
-                                    .foregroundStyle(Color(red: 0.12, green: 0.16, blue: 0.24))
-
-                                ForEach(config.systemAudioDisplays) { display in
-                                    Text(display.title)
-                                        .font(.system(size: 12.5, weight: .medium))
-                                        .foregroundStyle(Color(red: 0.25, green: 0.28, blue: 0.34))
-                                }
-                            }
-                        }
-
-                        if !config.systemAudioApplications.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(tr("应用", "Applications"))
-                                    .font(.system(size: 13.5, weight: .semibold))
-                                    .foregroundStyle(Color(red: 0.12, green: 0.16, blue: 0.24))
-
-                                ScrollView {
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        ForEach(config.systemAudioApplications.prefix(18)) { app in
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(app.applicationName)
-                                                    .font(.system(size: 12.5, weight: .semibold))
-                                                    .foregroundStyle(Color(red: 0.15, green: 0.18, blue: 0.24))
-                                                Text("\(app.bundleIdentifier.isEmpty ? "bundle id unavailable" : app.bundleIdentifier) • pid \(app.processID)")
-                                                    .font(.system(size: 11.5, weight: .medium))
-                                                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
-                                            }
-                                        }
-                                    }
-                                }
-                                .frame(minHeight: 120, maxHeight: 220)
-                            }
-                        }
-                    }
-                }
-            }
-
-            SettingsCard(title: tr("热键测试", "Hotkey Test"), subtitle: tr("监听修饰键变化，确认系统是否能识别你想用的热键。", "Listen for modifier changes and confirm the system sees the hotkey you want to use.")) {
+            SettingsCard(title: tr("热键测试", "Hotkey Test"), subtitle: tr("监听修饰键变化，确认系统是否能识别你想用的热键。", "Listen for modifier changes and confirm the system sees the hotkey you want.")) {
                 VStack(spacing: 0) {
                     SettingsRow(label: tr("监听器", "Listener"), description: tr("开始监听后，按下 Fn 或已配置热键，查看原始事件详情。", "Start monitoring and press Fn or your configured key to see raw event details.")) {
                         HStack(spacing: 12) {
@@ -993,7 +1006,7 @@ struct ContentView: View {
 
             Spacer()
 
-            Text(tr("更改会写入本地配置和个人词表文件。", "Changes are written to the local config and vocabulary files."))
+            Text(tr("更改会写入本地配置、个人词表和纠错提示词文件。", "Changes are written to the local config, vocabulary, and correction-prompt files."))
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(Color(red: 0.46, green: 0.51, blue: 0.59))
 

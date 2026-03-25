@@ -141,6 +141,7 @@ class ConfigManager: ObservableObject {
     @Published var accessibilityGranted = false
     @Published var inputMonitoringGranted = false
     @Published var microphoneGranted = false
+    @Published var screenRecordingGranted = false
 
     // Hotkey test
     @Published var hotkeyTestActive = false
@@ -166,6 +167,11 @@ class ConfigManager: ObservableObject {
     @Published var systemAudioApplicationProbeSummary: String = ""
     @Published var systemAudioProbeRunning = false
     @Published var selectedSystemAudioApplicationPID: String = ""
+    @Published var meetingSessionCount = 0
+    @Published var latestMeetingSessionName: String = ""
+    @Published var latestMeetingSessionUpdatedAt: String = ""
+    @Published var latestMeetingSessionStatus: String = ""
+    @Published var latestMeetingSessionHasTranscript = false
 
     static let groqModels = ["whisper-large-v3-turbo", "whisper-large-v3"]
     static let localModelPresets = ["quantized", "fp16"]
@@ -196,6 +202,8 @@ class ConfigManager: ObservableObject {
         refreshInputDevices()
         refreshStatus()
         refreshPermissions()
+        refreshSystemAudioDiagnostics()
+        refreshMeetingSessionsOverview()
 
         statusTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
@@ -231,6 +239,7 @@ class ConfigManager: ObservableObject {
                 self.accessibilityGranted = ax
                 self.inputMonitoringGranted = im
                 self.microphoneGranted = mic
+                self.screenRecordingGranted = self.systemAudioScreenRecordingGranted
             }
         }
         #endif
@@ -340,6 +349,13 @@ class ConfigManager: ObservableObject {
             "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ListenEvent",
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
             "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?InputAccessories",
+        ])
+    }
+
+    func openScreenRecordingSettings() {
+        openSystemSettings(candidates: [
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
         ])
     }
 
@@ -647,6 +663,19 @@ class ConfigManager: ObservableObject {
         return usesEnglish ? "System Default" : "系统默认"
     }
 
+    var resolvedCaptureModeLabel: String {
+        switch normalizedCaptureMode {
+        case "system_audio_desktop":
+            return usesEnglish ? "Desktop Audio" : "桌面音频"
+        case "system_audio_microphone":
+            return usesEnglish ? "Desktop Audio + Microphone (Meeting)" : "桌面音频 + 麦克风（会议）"
+        case "system_audio_application":
+            return usesEnglish ? "Application Audio" : "应用音频"
+        default:
+            return usesEnglish ? "Microphone" : "麦克风"
+        }
+    }
+
     // MARK: - Daemon Control
 
     func refreshStatus() {
@@ -939,10 +968,12 @@ class ConfigManager: ObservableObject {
             DispatchQueue.main.async {
                 if let permissionSnapshot {
                     self.systemAudioScreenRecordingGranted = permissionSnapshot.screenRecording
+                    self.screenRecordingGranted = permissionSnapshot.screenRecording
                 }
 
                 if let shareableSnapshot {
                     self.systemAudioScreenRecordingGranted = shareableSnapshot.screenRecordingGranted
+                    self.screenRecordingGranted = shareableSnapshot.screenRecordingGranted
                     self.systemAudioDisplays = shareableSnapshot.displays
                     self.systemAudioApplications = shareableSnapshot.applications
                     self.systemAudioWindowCount = shareableSnapshot.windowCount
@@ -960,6 +991,7 @@ class ConfigManager: ObservableObject {
                         ? "Fetched \(shareableSnapshot.displays.count) displays and \(shareableSnapshot.applications.count) applications."
                         : "已获取 \(shareableSnapshot.displays.count) 个显示器和 \(shareableSnapshot.applications.count) 个应用。"
                 } else {
+                    self.screenRecordingGranted = self.systemAudioScreenRecordingGranted
                     self.systemAudioDisplays = []
                     self.systemAudioApplications = []
                     self.systemAudioWindowCount = 0
@@ -1202,6 +1234,99 @@ class ConfigManager: ObservableObject {
                 self.startNSEventMonitor()
             }
         }
+    }
+
+    // MARK: - Meeting Sessions
+
+    func refreshMeetingSessionsOverview() {
+        let rootURL = meetingSessionsDirectoryURL
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let fileManager = FileManager.default
+
+            guard fileManager.fileExists(atPath: rootURL.path) else {
+                DispatchQueue.main.async {
+                    self.meetingSessionCount = 0
+                    self.latestMeetingSessionName = ""
+                    self.latestMeetingSessionUpdatedAt = ""
+                    self.latestMeetingSessionHasTranscript = false
+                    self.latestMeetingSessionStatus = self.usesEnglish
+                        ? "No meeting sessions have been saved on this Mac yet."
+                        : "当前这台 Mac 上还没有保存过会议记录。"
+                }
+                return
+            }
+
+            let keys: [URLResourceKey] = [.isDirectoryKey, .contentModificationDateKey]
+            let children = (try? fileManager.contentsOfDirectory(
+                at: rootURL,
+                includingPropertiesForKeys: keys,
+                options: [.skipsHiddenFiles]
+            )) ?? []
+
+            let directories = children.compactMap { url -> (url: URL, date: Date)? in
+                guard let values = try? url.resourceValues(forKeys: Set(keys)),
+                      values.isDirectory == true else {
+                    return nil
+                }
+                return (url, values.contentModificationDate ?? .distantPast)
+            }
+            .sorted { $0.date > $1.date }
+
+            let latest = directories.first
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: self.usesEnglish ? "en_US_POSIX" : "zh_CN")
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .short
+
+            DispatchQueue.main.async {
+                self.meetingSessionCount = directories.count
+
+                guard let latest else {
+                    self.latestMeetingSessionName = ""
+                    self.latestMeetingSessionUpdatedAt = ""
+                    self.latestMeetingSessionHasTranscript = false
+                    self.latestMeetingSessionStatus = self.usesEnglish
+                        ? "No meeting sessions have been saved on this Mac yet."
+                        : "当前这台 Mac 上还没有保存过会议记录。"
+                    return
+                }
+
+                let transcriptURL = latest.url.appendingPathComponent("merged_transcript.md")
+                let hasTranscript = fileManager.fileExists(atPath: transcriptURL.path)
+
+                self.latestMeetingSessionName = latest.url.lastPathComponent
+                self.latestMeetingSessionUpdatedAt = formatter.string(from: latest.date)
+                self.latestMeetingSessionHasTranscript = hasTranscript
+                self.latestMeetingSessionStatus = hasTranscript
+                    ? (self.usesEnglish
+                        ? "Latest session is ready for review."
+                        : "最近一次会议记录已经可查看。")
+                    : (self.usesEnglish
+                        ? "Latest session exists, but the merged transcript is not ready yet."
+                        : "最近一次会议目录已生成，但合并稿暂时还未写完。")
+            }
+        }
+    }
+
+    func openMeetingSessionsFolder() {
+        let fileManager = FileManager.default
+        let rootURL = meetingSessionsDirectoryURL
+
+        if fileManager.fileExists(atPath: rootURL.path) {
+            NSWorkspace.shared.open(rootURL)
+        } else {
+            NSWorkspace.shared.open(dataDir)
+        }
+    }
+
+    func openLatestMeetingSession() {
+        guard let latestURL = latestMeetingSessionURL else {
+            openMeetingSessionsFolder()
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([latestURL])
     }
 
     func stopHotkeyTest() {
@@ -1483,4 +1608,11 @@ class ConfigManager: ObservableObject {
     var configFileURL: URL { configPath }
     var logFileURL: URL { dataDir.appendingPathComponent("daemon.log") }
     var performanceLogDirectoryURL: URL { dataDir.appendingPathComponent("performance") }
+    var meetingSessionsDirectoryURL: URL { dataDir.appendingPathComponent("meeting-sessions") }
+
+    private var latestMeetingSessionURL: URL? {
+        let trimmed = latestMeetingSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return meetingSessionsDirectoryURL.appendingPathComponent(trimmed)
+    }
 }

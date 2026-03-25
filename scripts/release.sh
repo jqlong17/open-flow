@@ -10,6 +10,8 @@ set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
+NOTARY_PROFILE="${OPEN_FLOW_NOTARY_PROFILE:-}"
+ALLOW_UNNOTARIZED_RELEASE="${OPEN_FLOW_ALLOW_UNNOTARIZED_RELEASE:-0}"
 
 # 从 Cargo.toml 读版本
 VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/' | tr -d ' ')
@@ -29,7 +31,7 @@ fi
 echo "Version: $VERSION | Tag: $TAG | Target: $TARGET"
 echo ""
 echo "This script publishes the macOS .app signed by the current machine."
-echo "Use a stable local signing identity to keep macOS permissions as consistent as possible."
+echo "For public macOS distribution, use Developer ID signing and notarization."
 echo ""
 
 # 若 tag 不存在则创建并推送
@@ -55,14 +57,53 @@ echo "  -> dist/open-flow-${TARGET}.tar.gz"
 
 # 2) .app（调用 build-app.sh）
 echo ""
-OPENFLOW_PERF_DEV_UI=0 "$REPO_ROOT/scripts/build-app.sh"
+OPEN_FLOW_BUILD_PROFILE=distribution OPENFLOW_PERF_DEV_UI=0 "$REPO_ROOT/scripts/build-app.sh"
+
+APP_PATH="$REPO_ROOT/dist/Open Flow.app"
+SIGNING_AUTHORITY="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
+echo "App signing authority: ${SIGNING_AUTHORITY:-unknown}"
+
+if [[ "$SIGNING_AUTHORITY" != *"Developer ID Application"* ]]; then
+  if [[ "$ALLOW_UNNOTARIZED_RELEASE" == "1" ]]; then
+    echo "WARNING: app is not signed with Developer ID Application."
+    echo "This package is suitable only for internal/manual distribution."
+  else
+    echo "ERROR: public release build must use a Developer ID Application certificate."
+    echo "Current signing authority: ${SIGNING_AUTHORITY:-none}"
+    echo "If you only want an internal test package, rerun with OPEN_FLOW_ALLOW_UNNOTARIZED_RELEASE=1."
+    exit 1
+  fi
+fi
 
 # 3) .app 打成 zip 供用户下载
 APP_ZIP="Open-Flow-${VERSION}-macos-${TARGET}.app.zip"
 echo ""
-echo "Zipping .app..."
-(cd dist && zip -rq "$APP_ZIP" "Open Flow.app")
+echo "Packaging .app with ditto..."
+rm -f "dist/$APP_ZIP"
+(cd dist && ditto -c -k --keepParent "Open Flow.app" "$APP_ZIP")
 echo "  -> dist/$APP_ZIP"
+
+if [[ -n "$NOTARY_PROFILE" ]]; then
+  echo ""
+  echo "Submitting app for notarization with profile: $NOTARY_PROFILE"
+  xcrun notarytool submit "dist/$APP_ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+  echo "Stapling notarization ticket..."
+  xcrun stapler staple "$APP_PATH"
+  xcrun stapler validate "$APP_PATH"
+  echo "Repackaging stapled .app..."
+  rm -f "dist/$APP_ZIP"
+  (cd dist && ditto -c -k --keepParent "Open Flow.app" "$APP_ZIP")
+elif [[ "$ALLOW_UNNOTARIZED_RELEASE" == "1" ]]; then
+  echo ""
+  echo "WARNING: notarization skipped. Downloaded app may still be blocked by Gatekeeper on other Macs."
+else
+  echo ""
+  echo "ERROR: OPEN_FLOW_NOTARY_PROFILE is not set."
+  echo "Public macOS downloads normally require notarization after Developer ID signing."
+  echo "Set OPEN_FLOW_NOTARY_PROFILE to a configured notarytool keychain profile,"
+  echo "or rerun with OPEN_FLOW_ALLOW_UNNOTARIZED_RELEASE=1 for internal-only sharing."
+  exit 1
+fi
 
 # 4) GitHub Release
 RELEASE_NOTES="${1:-}"

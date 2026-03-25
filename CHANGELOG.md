@@ -4,6 +4,11 @@
 
 ## 2026-03-26
 
+- 重整 macOS 设置页的信息架构，重新划分为 **General / Recognition / Models / Vocabulary / Meetings / Permissions / Logs** 七个分页，让识别、模型、个人热词、会议与日志职责更清晰。
+- 清理旧版 `Diagnostics` 遗留实现，将会议概览与会话状态收敛到 `Meetings`，将排障、热键、daemon 与性能相关内容收敛到 `Logs`，减少重复卡片和历史过渡代码。
+- 修复 macOS 发布打包脚本错误优先选择 `Apple Development` 证书的问题，正式发版路径现已切换为优先使用 `Developer ID Application`。
+- macOS Release 打包流程改为使用 `ditto` 生成 `.app.zip`，并增加 notarization（公证）检查与可选提交流程，降低下载后“无法安装/无法打开”的风险。
+- 新增 `scripts/setup-notary-profile.sh`，用于本机初始化 `notarytool` profile，方便后续正式发布时直接走签名 + 公证链路。
 - 新增 **桌面音频 + 麦克风（会议）** 录音模式，可同时采集系统声音与麦克风输入，并输出带“我 / 对方”标签的首版会议转写结果。
 - 系统音频 helper 增加可捕获 display 的重试与回退策略，并在 helper 启动后加入早期失败检测，提升会议模式下系统音频链路的稳定性。
 - 双路会议模式已支持**持续分段采集、持续分段转写、持续落盘**，会按固定时长生成片段并持续写入本地会话目录。

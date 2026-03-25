@@ -11,6 +11,13 @@ BUNDLE_ID="com.openflow.open-flow"
 DIST_APP_DIR="$REPO_ROOT/dist/${APP_NAME}.app"
 INSTALL_APP_DIR="/Applications/${APP_NAME}.app"
 SIGN_IDENTITY="${OPEN_FLOW_SIGN_IDENTITY:-}"
+BUILD_PROFILE="${OPEN_FLOW_BUILD_PROFILE:-local}"
+
+if [[ "$BUILD_PROFILE" != "local" && "$BUILD_PROFILE" != "distribution" ]]; then
+  echo "Unsupported OPEN_FLOW_BUILD_PROFILE: $BUILD_PROFILE"
+  echo "Expected: local or distribution"
+  exit 1
+fi
 
 # Kill any running open-flow processes before rebuilding
 echo "Stopping any running Open Flow instances..."
@@ -63,6 +70,7 @@ if [[ ! -f "$SYSTEM_AUDIO_HELPER_PATH" ]]; then
 fi
 
 echo "Using system audio helper: $SYSTEM_AUDIO_HELPER_PATH"
+echo "Build profile: $BUILD_PROFILE"
 
 echo "Creating .app structure..."
 rm -rf "$DIST_APP_DIR"
@@ -127,21 +135,20 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
   if command -v security >/dev/null 2>&1; then
     IFS=$'\n' read -r -d '' -a SIGN_IDENTITIES < <(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(.*\)"/\1/p'; printf '\0')
 
-    for id in "${SIGN_IDENTITIES[@]}"; do
-      if [[ "$id" == *"Apple Development"* ]]; then
-        SIGN_IDENTITY="$id"
-        break
-      fi
-    done
+    if [[ "$BUILD_PROFILE" == "distribution" ]]; then
+      PREFERRED_PATTERNS=("Developer ID Application" "Apple Development")
+    else
+      PREFERRED_PATTERNS=("Apple Development" "Developer ID Application")
+    fi
 
-    if [[ -z "$SIGN_IDENTITY" ]]; then
+    for pattern in "${PREFERRED_PATTERNS[@]}"; do
       for id in "${SIGN_IDENTITIES[@]}"; do
-        if [[ "$id" == *"Developer ID Application"* ]]; then
+        if [[ "$id" == *"$pattern"* ]]; then
           SIGN_IDENTITY="$id"
-          break
+          break 2
         fi
       done
-    fi
+    done
 
     if [[ -z "$SIGN_IDENTITY" && ${#SIGN_IDENTITIES[@]} -gt 0 ]]; then
       SIGN_IDENTITY="${SIGN_IDENTITIES[0]}"
@@ -157,10 +164,18 @@ else
   echo "Tip: export OPEN_FLOW_SIGN_IDENTITY=\"Apple Development: Your Name (TEAMID)\""
 fi
 
-codesign --force --sign "$SIGN_IDENTITY" --identifier "${BUNDLE_ID}" "$DIST_APP_DIR/Contents/MacOS/open-flow"
-codesign --force --sign "$SIGN_IDENTITY" --identifier "${BUNDLE_ID}.settings" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
-codesign --force --sign "$SIGN_IDENTITY" --identifier "${BUNDLE_ID}.system-audio-helper" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSystemAudioHelper"
-codesign --force --deep --sign "$SIGN_IDENTITY" "$DIST_APP_DIR"
+SIGN_ARGS=(--force --sign "$SIGN_IDENTITY")
+BUNDLE_SIGN_ARGS=(--force --deep --sign "$SIGN_IDENTITY")
+
+if [[ "$SIGN_IDENTITY" == *"Developer ID Application"* ]]; then
+  SIGN_ARGS+=(--options runtime --timestamp)
+  BUNDLE_SIGN_ARGS+=(--options runtime --timestamp)
+fi
+
+codesign "${SIGN_ARGS[@]}" --identifier "${BUNDLE_ID}" "$DIST_APP_DIR/Contents/MacOS/open-flow"
+codesign "${SIGN_ARGS[@]}" --identifier "${BUNDLE_ID}.settings" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
+codesign "${SIGN_ARGS[@]}" --identifier "${BUNDLE_ID}.system-audio-helper" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSystemAudioHelper"
+codesign "${BUNDLE_SIGN_ARGS[@]}" "$DIST_APP_DIR"
 
 echo "Signing result:"
 codesign -dv --verbose=2 "$DIST_APP_DIR" 2>&1 | sed -n 's/^Identifier=/  Identifier=/p; s/^TeamIdentifier=/  TeamIdentifier=/p; s/^Authority=/  Authority=/p'
