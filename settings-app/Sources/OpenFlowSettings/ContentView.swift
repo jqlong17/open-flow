@@ -101,27 +101,7 @@ struct ContentView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Button {
-                if config.daemonRunning {
-                    config.quitApp()
-                } else {
-                    config.startDaemon()
-                }
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "arrow.left")
-                        .font(.system(size: 15, weight: .medium))
-                    Text(tr("返回应用", "Back to App"))
-                        .font(.system(size: 15, weight: .medium))
-                }
-                .foregroundStyle(Color(red: 0.40, green: 0.45, blue: 0.54))
-                .padding(.horizontal, 6)
-                .padding(.top, 8)
-            }
-            .buttonStyle(.plain)
-
             VStack(alignment: .leading, spacing: 6) {
-
                 ForEach(SettingsPane.allCases) { pane in
                     SidebarItemButton(
                         title: pane.title(isEnglish: isEnglish),

@@ -78,7 +78,7 @@ mod platform {
             let ui_language = Config::load()
                 .map(|config| UiLanguage::from_config(&config))
                 .unwrap_or_default();
-            let icon_idle = create_circle_icon(128, 128, 128);
+            let icon_idle = create_circle_icon(255, 255, 255);
             let icon_recording = create_circle_icon(255, 80, 80);
             let icon_transcribing = create_circle_icon(255, 200, 0);
 
