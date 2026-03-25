@@ -48,6 +48,22 @@ fi
 
 echo "Using settings helper: $SETTINGS_HELPER_PATH"
 
+SYSTEM_AUDIO_HELPER_PATH="$SETTINGS_BIN_DIR/OpenFlowSystemAudioHelper"
+if [[ ! -f "$SYSTEM_AUDIO_HELPER_PATH" ]]; then
+  LEGACY_SYSTEM_AUDIO_HELPER_PATH="$REPO_ROOT/settings-app/.build/release/OpenFlowSystemAudioHelper"
+  if [[ -f "$LEGACY_SYSTEM_AUDIO_HELPER_PATH" ]]; then
+    SYSTEM_AUDIO_HELPER_PATH="$LEGACY_SYSTEM_AUDIO_HELPER_PATH"
+  else
+    echo "Failed to locate OpenFlowSystemAudioHelper binary."
+    echo "Checked:"
+    echo "  $SYSTEM_AUDIO_HELPER_PATH"
+    echo "  $LEGACY_SYSTEM_AUDIO_HELPER_PATH"
+    exit 1
+  fi
+fi
+
+echo "Using system audio helper: $SYSTEM_AUDIO_HELPER_PATH"
+
 echo "Creating .app structure..."
 rm -rf "$DIST_APP_DIR"
 mkdir -p "$DIST_APP_DIR/Contents/MacOS"
@@ -60,6 +76,10 @@ chmod +x "$DIST_APP_DIR/Contents/MacOS/open-flow"
 # Settings app helper
 cp "$SETTINGS_HELPER_PATH" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
 chmod +x "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
+
+# System audio helper
+cp "$SYSTEM_AUDIO_HELPER_PATH" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSystemAudioHelper"
+chmod +x "$DIST_APP_DIR/Contents/MacOS/OpenFlowSystemAudioHelper"
 
 # 图标
 if [[ -f "$REPO_ROOT/assets/AppIcon.icns" ]]; then
@@ -93,6 +113,8 @@ cat > "$DIST_APP_DIR/Contents/Info.plist" << EOF
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Open Flow needs microphone access to record audio for real-time speech-to-text transcription.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Open Flow needs audio capture access for experimental system audio transcription features.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Open Flow uses a local speech recognition model to transcribe voice to text.</string>
 	<key>NSAccessibilityUsageDescription</key>
@@ -137,6 +159,7 @@ fi
 
 codesign --force --sign "$SIGN_IDENTITY" --identifier "${BUNDLE_ID}" "$DIST_APP_DIR/Contents/MacOS/open-flow"
 codesign --force --sign "$SIGN_IDENTITY" --identifier "${BUNDLE_ID}.settings" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
+codesign --force --sign "$SIGN_IDENTITY" --identifier "${BUNDLE_ID}.system-audio-helper" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSystemAudioHelper"
 codesign --force --deep --sign "$SIGN_IDENTITY" "$DIST_APP_DIR"
 
 echo "Signing result:"

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::info;
@@ -19,6 +19,8 @@ use crate::hotkey::{
 use crate::text_injection::TextInjector;
 use crate::tray::{TrayHandle, TrayIconState};
 use open_flow::correction::TextCorrector;
+use open_flow::meeting_notes::{MeetingSessionWriter, MeetingTranscriptEntry};
+use open_flow::system_audio::SystemAudioCapture;
 
 /// Daemon 事件类型
 #[derive(Debug)]
@@ -42,6 +44,7 @@ struct CorrectionOutcome {
     status: &'static str,
 }
 
+#[derive(Debug)]
 struct AsrExecutionSummary {
     result: TranscriptionResult,
     segmented: bool,
@@ -55,6 +58,20 @@ struct ActivePerformanceSession {
     resource_at_record_start: ProcessResourceSnapshot,
 }
 
+#[derive(Clone)]
+struct DualMeetingLiveState {
+    session_writer: MeetingSessionWriter,
+    entries: Arc<Mutex<Vec<MeetingTranscriptEntry>>>,
+    microphone_cursor: Arc<AtomicUsize>,
+    system_audio_cursor: Arc<AtomicUsize>,
+    microphone_inflight: Arc<AtomicBool>,
+    system_audio_inflight: Arc<AtomicBool>,
+    microphone_processed_samples: Arc<AtomicUsize>,
+    system_audio_processed_samples: Arc<AtomicUsize>,
+    microphone_segment_index: Arc<AtomicU64>,
+    system_audio_segment_index: Arc<AtomicU64>,
+}
+
 pub struct Daemon {
     state: Arc<Mutex<RecordingState>>,
     is_processing: AtomicBool,
@@ -62,14 +79,18 @@ pub struct Daemon {
     recording_session_count: std::sync::atomic::AtomicU64,
     transcription_count: std::sync::atomic::AtomicU64,
     recording_warning_issued: AtomicBool,
-    audio_capture: AudioCapture,
+    audio_capture: Option<AudioCapture>,
     provider: Arc<dyn AsrProvider>,
     text_injector: TextInjector,
     active_stream: Mutex<Option<cpal::Stream>>,
+    active_system_audio: Mutex<Option<SystemAudioCapture>>,
     recording_buffer: Mutex<Arc<Mutex<Vec<f32>>>>,
+    microphone_recording_buffer: Mutex<Option<Arc<Mutex<Vec<f32>>>>>,
+    system_audio_recording_buffer: Mutex<Option<Arc<Mutex<Vec<f32>>>>>,
     tray: Option<Arc<TrayHandle>>,
     hotkey: String,
     trigger_mode: String,
+    capture_mode: String,
     draft_mode_active: Arc<AtomicBool>,
     draft_event_tx: Option<std::sync::mpsc::SyncSender<DraftPanelEvent>>,
     draft_live_cursor: Arc<AtomicUsize>,
@@ -81,15 +102,19 @@ pub struct Daemon {
     correction_api_key_configured: bool,
     correction_model_name: String,
     correction_vocab_count: usize,
+    system_audio_target_pid: String,
+    system_audio_target_name: String,
     performance_logger: PerformanceLogWriter,
     performance_log_enabled: bool,
     current_recording_session: Mutex<Option<ActivePerformanceSession>>,
+    dual_meeting_live_state: Mutex<Option<DualMeetingLiveState>>,
 }
 
 const MAX_RECORDING_DURATION_SECS: u64 = 2 * 60 * 60;
 const RECORDING_WARNING_DURATION_SECS: u64 = MAX_RECORDING_DURATION_SECS - 5 * 60;
 const TRANSCRIBE_SEGMENT_SECS: u64 = 60;
 const TRANSCRIBE_TIMEOUT_SECS: u64 = 120;
+const DUAL_MEETING_SEGMENT_SECS: u64 = 10;
 
 impl Daemon {
     fn personal_vocabulary_count() -> usize {
@@ -106,6 +131,24 @@ impl Daemon {
             .unwrap_or(0)
     }
 
+    fn uses_microphone_capture(&self) -> bool {
+        matches!(
+            self.capture_mode.as_str(),
+            "microphone" | "system_audio_microphone"
+        )
+    }
+
+    fn uses_system_audio_capture(&self) -> bool {
+        matches!(
+            self.capture_mode.as_str(),
+            "system_audio_desktop" | "system_audio_application" | "system_audio_microphone"
+        )
+    }
+
+    fn is_dual_capture_mode(&self) -> bool {
+        self.capture_mode == "system_audio_microphone"
+    }
+
     pub fn new(
         provider: Arc<dyn AsrProvider>,
         tray: Option<Arc<TrayHandle>>,
@@ -113,9 +156,26 @@ impl Daemon {
         draft_event_tx: Option<std::sync::mpsc::SyncSender<DraftPanelEvent>>,
     ) -> Result<Self> {
         let config = crate::common::config::Config::load().unwrap_or_default();
-        let audio_capture =
-            AudioCapture::new_with_device_name(config.resolved_input_source().as_deref())
-                .context("初始化音频采集器失败")?;
+        let capture_mode = config.resolved_capture_mode();
+        let uses_microphone = matches!(
+            capture_mode.as_str(),
+            "microphone" | "system_audio_microphone"
+        );
+        let uses_system_audio = matches!(
+            capture_mode.as_str(),
+            "system_audio_desktop" | "system_audio_application" | "system_audio_microphone"
+        );
+        let audio_capture = if uses_microphone {
+            Some(
+                AudioCapture::new_with_device_name(config.resolved_input_source().as_deref())
+                    .context("初始化音频采集器失败")?,
+            )
+        } else {
+            None
+        };
+        if uses_system_audio && !SystemAudioCapture::helper_available() {
+            anyhow::bail!("系统音频 helper 不可用，请先构建或重新打包 Open Flow.app");
+        }
         let text_injector = TextInjector::new();
         let text_corrector = TextCorrector::from_config(&config);
         let correction_config_enabled = config.correction_enabled();
@@ -126,11 +186,17 @@ impl Daemon {
         let performance_log_enabled = performance_logger.enabled();
 
         println!(
-            "[Pipeline] startup provider={} input_source={} correction_config_enabled={} correction_runtime_enabled={} correction_api_key_configured={} correction_model={} vocabulary_terms={} performance_log_enabled={}",
+            "[Pipeline] startup provider={} capture_mode={} input_source={} system_audio_target_pid={} correction_config_enabled={} correction_runtime_enabled={} correction_api_key_configured={} correction_model={} vocabulary_terms={} performance_log_enabled={}",
             provider.name(),
+            config.resolved_capture_mode(),
             config
                 .resolved_input_source()
                 .unwrap_or_else(|| "system_default".to_string()),
+            if config.system_audio_target_pid.trim().is_empty() {
+                "none".to_string()
+            } else {
+                config.system_audio_target_pid.clone()
+            },
             correction_config_enabled,
             text_corrector.is_some(),
             correction_api_key_configured,
@@ -150,10 +216,14 @@ impl Daemon {
             provider,
             text_injector,
             active_stream: Mutex::new(None),
+            active_system_audio: Mutex::new(None),
             recording_buffer: Mutex::new(Arc::new(Mutex::new(Vec::new()))),
+            microphone_recording_buffer: Mutex::new(None),
+            system_audio_recording_buffer: Mutex::new(None),
             tray,
             hotkey: config.hotkey.clone(),
             trigger_mode: config.trigger_mode,
+            capture_mode,
             draft_mode_active,
             draft_event_tx,
             draft_live_cursor: Arc::new(AtomicUsize::new(0)),
@@ -165,9 +235,12 @@ impl Daemon {
             correction_api_key_configured,
             correction_model_name,
             correction_vocab_count,
+            system_audio_target_pid: config.system_audio_target_pid.clone(),
+            system_audio_target_name: config.system_audio_target_name.clone(),
             performance_logger,
             performance_log_enabled,
             current_recording_session: Mutex::new(None),
+            dual_meeting_live_state: Mutex::new(None),
         })
     }
 
@@ -194,7 +267,12 @@ impl Daemon {
             "Permission diagnostics: current_exe={} accessibility_ok={} input_monitoring_ok={}",
             current_exe, accessibility_ok, input_monitoring_ok
         );
-        let microphone_ok = crate::hotkey::check_microphone_permission();
+        let microphone_required = self.uses_microphone_capture();
+        let microphone_ok = if microphone_required {
+            crate::hotkey::check_microphone_permission()
+        } else {
+            true
+        };
         println!("{}", ui.pick("🔎 权限诊断", "🔎 Permission Diagnostics"));
         println!(
             "   {} {}",
@@ -228,7 +306,7 @@ impl Daemon {
             );
             crate::hotkey::request_input_monitoring_permission();
         }
-        if !microphone_ok {
+        if microphone_required && !microphone_ok {
             println!();
             println!(
                 "{}",
@@ -260,7 +338,7 @@ impl Daemon {
         }
 
         // ── 音频设备信息 ──────────────────────────────────────────────
-        let audio_info = self.audio_capture.get_info();
+        let audio_info = self.current_audio_info();
 
         // ── 启动热键监听器 ─────────────────────────────────────────────
         let config = crate::common::config::Config::load().unwrap_or_default();
@@ -297,6 +375,22 @@ impl Daemon {
         );
         println!(
             "   {} {}",
+            ui.pick("捕获模式:", "Capture Mode:"),
+            match self.capture_mode.as_str() {
+                "system_audio_microphone" => {
+                    ui.pick("桌面音频 + 麦克风（会议）", "Desktop Audio + Microphone (Meeting)")
+                }
+                "system_audio_desktop" => {
+                    ui.pick("桌面音频（实验）", "Desktop Audio (Experimental)")
+                }
+                "system_audio_application" => {
+                    ui.pick("应用音频（实验）", "Application Audio (Experimental)")
+                }
+                _ => ui.pick("麦克风", "Microphone"),
+            }
+        );
+        println!(
+            "   {} {}",
             ui.pick("输入设备:", "Input Device:"),
             audio_info.device_name
         );
@@ -313,6 +407,38 @@ impl Daemon {
                 ),
             )
         );
+        if self.is_dual_capture_mode() {
+            if let Some(mic_info) = self.microphone_audio_info() {
+                println!(
+                    "{}",
+                    ui.pick(
+                        format!(
+                            "   麦克风: {} / {}Hz / {} 通道",
+                            mic_info.device_name, mic_info.sample_rate, mic_info.channels
+                        ),
+                        format!(
+                            "   Microphone: {} / {}Hz / {} channels",
+                            mic_info.device_name, mic_info.sample_rate, mic_info.channels
+                        ),
+                    )
+                );
+            }
+            if let Some(system_info) = self.system_audio_info() {
+                println!(
+                    "{}",
+                    ui.pick(
+                        format!(
+                            "   系统音频: {} / {}Hz / {} 通道",
+                            system_info.device_name, system_info.sample_rate, system_info.channels
+                        ),
+                        format!(
+                            "   System Audio: {} / {}Hz / {} channels",
+                            system_info.device_name, system_info.sample_rate, system_info.channels
+                        ),
+                    )
+                );
+            }
+        }
         println!("   Provider: {}", self.provider.name());
         println!();
         println!("{}", ui.pick("🎙️  按热键开始录音，再按一次停止并转写", "🎙️  Press the hotkey to start recording, then press it again to stop and transcribe"));
@@ -394,6 +520,9 @@ impl Daemon {
                     };
 
                     if let Some(elapsed) = recording_elapsed {
+                        if self.is_dual_capture_mode() {
+                            self.maybe_schedule_dual_live_transcription();
+                        }
                         self.maybe_schedule_live_draft_transcription();
 
                         if elapsed.as_secs() >= MAX_RECORDING_DURATION_SECS {
@@ -445,6 +574,10 @@ impl Daemon {
             return;
         }
 
+        if self.is_dual_capture_mode() {
+            return;
+        }
+
         let is_recording = self.state.lock().unwrap().is_recording;
         if !is_recording {
             return;
@@ -463,7 +596,7 @@ impl Daemon {
             return;
         }
 
-        let sample_rate = self.audio_capture.get_info().sample_rate as usize;
+        let sample_rate = self.current_audio_info().sample_rate as usize;
         let min_chunk = sample_rate.saturating_mul(2);
         let prune_threshold = sample_rate.saturating_mul(30);
         let mut cursor = self.draft_live_cursor.load(Ordering::SeqCst);
@@ -529,6 +662,139 @@ impl Daemon {
                 }
             }
 
+            inflight.store(false, Ordering::SeqCst);
+        });
+    }
+
+    fn maybe_schedule_dual_live_transcription(&self) {
+        if !self.is_dual_capture_mode() {
+            return;
+        }
+
+        let is_recording = self.state.lock().unwrap().is_recording;
+        if !is_recording {
+            return;
+        }
+
+        let Some(live_state) = self.dual_meeting_live_state.lock().unwrap().clone() else {
+            return;
+        };
+
+        if let (Some(buffer_arc), Some(audio_info)) = (
+            self.system_audio_recording_buffer.lock().unwrap().clone(),
+            self.system_audio_info(),
+        ) {
+            self.maybe_schedule_dual_source_segment(
+                live_state.clone(),
+                buffer_arc,
+                live_state.system_audio_cursor.clone(),
+                live_state.system_audio_inflight.clone(),
+                live_state.system_audio_processed_samples.clone(),
+                live_state.system_audio_segment_index.clone(),
+                "system_audio",
+                "对方",
+                audio_info.sample_rate,
+            );
+        }
+
+        if let (Some(buffer_arc), Some(audio_info)) = (
+            self.microphone_recording_buffer.lock().unwrap().clone(),
+            self.microphone_audio_info(),
+        ) {
+            self.maybe_schedule_dual_source_segment(
+                live_state.clone(),
+                buffer_arc,
+                live_state.microphone_cursor.clone(),
+                live_state.microphone_inflight.clone(),
+                live_state.microphone_processed_samples.clone(),
+                live_state.microphone_segment_index.clone(),
+                "microphone",
+                "我",
+                audio_info.sample_rate,
+            );
+        }
+    }
+
+    fn maybe_schedule_dual_source_segment(
+        &self,
+        live_state: DualMeetingLiveState,
+        buffer_arc: Arc<Mutex<Vec<f32>>>,
+        cursor: Arc<AtomicUsize>,
+        inflight: Arc<AtomicBool>,
+        processed_samples: Arc<AtomicUsize>,
+        segment_index: Arc<AtomicU64>,
+        source: &'static str,
+        role_label: &'static str,
+        sample_rate: u32,
+    ) {
+        if inflight.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let chunk_samples = (sample_rate as usize)
+            .saturating_mul(DUAL_MEETING_SEGMENT_SECS as usize)
+            .max(1);
+        let (start_cursor, start_sample_offset, chunk) = {
+            let guard = buffer_arc.lock().unwrap();
+            let cursor_value = cursor.load(Ordering::SeqCst);
+            if cursor_value >= guard.len() || guard.len().saturating_sub(cursor_value) < chunk_samples {
+                return;
+            }
+            let end = cursor_value.saturating_add(chunk_samples);
+            let start_offset = processed_samples.load(Ordering::SeqCst).saturating_add(cursor_value);
+            (cursor_value, start_offset, guard[cursor_value..end].to_vec())
+        };
+
+        let consumed_samples = chunk.len();
+        let started_at_ms = start_sample_offset as u64 * 1000 / sample_rate as u64;
+        let ended_at_ms =
+            (start_sample_offset.saturating_add(consumed_samples)) as u64 * 1000 / sample_rate as u64;
+        cursor.store(start_cursor.saturating_add(consumed_samples), Ordering::SeqCst);
+        inflight.store(true, Ordering::SeqCst);
+
+        let provider = self.provider.clone();
+        let draft_event_tx = self.draft_event_tx.clone();
+        let draft_mode_active = self.draft_mode_active.clone();
+
+        tokio::spawn(async move {
+            let entry_result = Self::process_dual_source_segment(
+                live_state.session_writer.clone(),
+                live_state.entries.clone(),
+                provider,
+                chunk,
+                source,
+                role_label,
+                sample_rate,
+                segment_index.fetch_add(1, Ordering::SeqCst) + 1,
+                started_at_ms,
+                ended_at_ms,
+            )
+            .await;
+
+            if let Ok(Some(entry)) = entry_result {
+                if draft_mode_active.load(Ordering::SeqCst) {
+                    if let Some(tx) = draft_event_tx {
+                        let _ = tx.try_send(DraftPanelEvent::AppendText(format!(
+                            "{}：{}\n",
+                            entry.role_label, entry.text
+                        )));
+                    }
+                }
+            } else if let Err(err) = entry_result {
+                eprintln!(
+                    "[Meeting] failed_to_process_segment source={} error={}",
+                    source, err
+                );
+            }
+
+            if let Ok(mut guard) = buffer_arc.lock() {
+                let drain_to = consumed_samples.min(guard.len());
+                if drain_to > 0 {
+                    guard.drain(0..drain_to);
+                }
+            }
+            processed_samples.fetch_add(consumed_samples, Ordering::SeqCst);
+            cursor.fetch_sub(consumed_samples, Ordering::SeqCst);
             inflight.store(false, Ordering::SeqCst);
         });
     }
@@ -609,19 +875,80 @@ impl Daemon {
         println!("[Daemon] start_recording state_checked");
 
         let session_buf: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        let microphone_buf = if self.uses_microphone_capture() {
+            Some(Arc::new(Mutex::new(Vec::new())))
+        } else {
+            None
+        };
+        let system_audio_buf = if self.uses_system_audio_capture() {
+            Some(Arc::new(Mutex::new(Vec::new())))
+        } else {
+            None
+        };
         println!("[Daemon] start_recording session_buffer_created");
 
-        let stream = self
-            .audio_capture
-            .build_live_stream(session_buf.clone())
-            .context("创建录音流失败")?;
-        println!("[Daemon] start_recording build_live_stream_returned");
+        match self.capture_mode.as_str() {
+            "microphone" => {
+                let stream = self
+                    .audio_capture
+                    .as_ref()
+                    .context("麦克风模式下音频采集器未初始化")?
+                    .build_live_stream(session_buf.clone())
+                    .context("创建录音流失败")?;
+                println!("[Daemon] start_recording build_live_stream_returned");
+                *self.active_stream.lock().unwrap() = Some(stream);
+                println!("[Daemon] start_recording active_stream_stored");
+                *self.microphone_recording_buffer.lock().unwrap() = Some(session_buf.clone());
+                *self.system_audio_recording_buffer.lock().unwrap() = None;
+            }
+            "system_audio_desktop" | "system_audio_application" => {
+                let mut config = crate::common::config::Config::load().unwrap_or_default();
+                config.capture_mode = self.capture_mode.clone();
+                config.system_audio_target_pid = self.system_audio_target_pid.clone();
+                config.system_audio_target_name = self.system_audio_target_name.clone();
+                let capture = SystemAudioCapture::spawn_from_config(&config, session_buf.clone())
+                    .context("启动系统音频流失败")?;
+                println!("[Daemon] start_recording system_audio_capture_started");
+                *self.active_system_audio.lock().unwrap() = Some(capture);
+                *self.microphone_recording_buffer.lock().unwrap() = None;
+                *self.system_audio_recording_buffer.lock().unwrap() = Some(session_buf.clone());
+            }
+            "system_audio_microphone" => {
+                let microphone_buf = microphone_buf
+                    .clone()
+                    .context("会议双路模式下麦克风缓冲区未初始化")?;
+                let system_audio_buf = system_audio_buf
+                    .clone()
+                    .context("会议双路模式下系统音频缓冲区未初始化")?;
+
+                let stream = self
+                    .audio_capture
+                    .as_ref()
+                    .context("会议双路模式下麦克风采集器未初始化")?
+                    .build_live_stream(microphone_buf.clone())
+                    .context("创建麦克风录音流失败")?;
+                println!("[Daemon] start_recording build_live_stream_returned");
+
+                let mut config = crate::common::config::Config::load().unwrap_or_default();
+                config.capture_mode = "system_audio_desktop".to_string();
+                config.system_audio_target_pid.clear();
+                config.system_audio_target_name.clear();
+                let capture =
+                    SystemAudioCapture::spawn_from_config(&config, system_audio_buf.clone())
+                        .context("启动桌面系统音频流失败")?;
+                println!("[Daemon] start_recording system_audio_capture_started");
+                *self.active_stream.lock().unwrap() = Some(stream);
+                println!("[Daemon] start_recording active_stream_stored");
+                *self.active_system_audio.lock().unwrap() = Some(capture);
+
+                *self.microphone_recording_buffer.lock().unwrap() = Some(microphone_buf);
+                *self.system_audio_recording_buffer.lock().unwrap() = Some(system_audio_buf);
+            }
+            other => anyhow::bail!("未知录音模式: {}", other),
+        }
 
         *self.recording_buffer.lock().unwrap() = session_buf;
         println!("[Daemon] start_recording recording_buffer_stored");
-
-        *self.active_stream.lock().unwrap() = Some(stream);
-        println!("[Daemon] start_recording active_stream_stored");
 
         {
             let mut state = self.state.lock().unwrap();
@@ -640,6 +967,29 @@ impl Daemon {
         println!("[Daemon] start_recording state_updated");
 
         let session_id = self.recording_session_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.is_dual_capture_mode() {
+            let session_writer = MeetingSessionWriter::create(session_id, &self.capture_mode)
+                .context("创建会议会话落盘目录失败")?;
+            println!(
+                "[Meeting] session_started session_id={} dir={}",
+                session_id,
+                session_writer.directory().display()
+            );
+            *self.dual_meeting_live_state.lock().unwrap() = Some(DualMeetingLiveState {
+                session_writer,
+                entries: Arc::new(Mutex::new(Vec::new())),
+                microphone_cursor: Arc::new(AtomicUsize::new(0)),
+                system_audio_cursor: Arc::new(AtomicUsize::new(0)),
+                microphone_inflight: Arc::new(AtomicBool::new(false)),
+                system_audio_inflight: Arc::new(AtomicBool::new(false)),
+                microphone_processed_samples: Arc::new(AtomicUsize::new(0)),
+                system_audio_processed_samples: Arc::new(AtomicUsize::new(0)),
+                microphone_segment_index: Arc::new(AtomicU64::new(0)),
+                system_audio_segment_index: Arc::new(AtomicU64::new(0)),
+            });
+        } else {
+            *self.dual_meeting_live_state.lock().unwrap() = None;
+        }
         let performance_session = ActivePerformanceSession {
             session_id,
             started_at_ms: now_unix_ms(),
@@ -688,7 +1038,26 @@ impl Daemon {
         // 这样即使旧 stream 有 stale 回调继续写入，也写入旧 Arc，不会影响下次 session
         let perf_session = self.current_recording_session.lock().unwrap().take();
         let session_buf = self.recording_buffer.lock().unwrap().clone();
+        let microphone_buf = self.microphone_recording_buffer.lock().unwrap().clone();
+        let system_audio_buf = self.system_audio_recording_buffer.lock().unwrap().clone();
+        let dual_live_state = self.dual_meeting_live_state.lock().unwrap().clone();
         drop(self.active_stream.lock().unwrap().take());
+        if let Some(capture) = self.active_system_audio.lock().unwrap().take() {
+            capture.stop();
+        }
+
+        if self.is_dual_capture_mode() {
+            return self
+                .stop_and_transcribe_dual(
+                    tx,
+                    duration,
+                    perf_session,
+                    dual_live_state,
+                    microphone_buf,
+                    system_audio_buf,
+                )
+                .await;
+        }
 
         let (buffer, session_buffer_len, session_buffer_capacity) = {
             let mut guard = session_buf.lock().unwrap();
@@ -746,7 +1115,7 @@ impl Daemon {
                 hotkey: self.hotkey.clone(),
                 segmented: false,
                 segment_count: 0,
-                sample_rate: self.audio_capture.get_info().sample_rate,
+                sample_rate: self.current_audio_info().sample_rate,
                 sample_count: 0,
                 recording_duration_ms: duration.as_millis() as u64,
                 asr_duration_ms: 0,
@@ -774,15 +1143,22 @@ impl Daemon {
             });
             eprintln!(
                 "{}",
-                ui.pick(
-                    "⚠️  录音为空，请检查麦克风权限（系统设置 > 隐私与安全性 > 麦克风）",
-                    "⚠️  The recording is empty. Please check microphone permission in System Settings > Privacy & Security > Microphone.",
-                )
+                if self.capture_mode == "microphone" {
+                    ui.pick(
+                        "⚠️  录音为空，请检查麦克风权限（系统设置 > 隐私与安全性 > 麦克风）",
+                        "⚠️  The recording is empty. Please check microphone permission in System Settings > Privacy & Security > Microphone.",
+                    )
+                } else {
+                    ui.pick(
+                        "⚠️  系统音频缓冲区为空，请确认目标正在发声，并且屏幕录制权限已授权。",
+                        "⚠️  The system-audio buffer is empty. Make sure the target is producing sound and screen recording permission is granted.",
+                    )
+                }
             );
             return Ok(());
         }
 
-        let sample_rate = self.audio_capture.get_info().sample_rate;
+        let sample_rate = self.current_audio_info().sample_rate;
 
         // 振幅诊断：如果音量过低说明麦克风权限缺失或静音
         let max_amp = buffer.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
@@ -829,25 +1205,42 @@ impl Daemon {
             });
             eprintln!(
                 "{}",
-                ui.pick(
-                    format!("⚠️  录音振幅极低（max={:.6}），麦克风可能未授权。", max_amp),
-                    format!("⚠️  Recording amplitude is very low (max={:.6}). Microphone permission may be missing.", max_amp),
-                )
+                if self.capture_mode == "microphone" {
+                    ui.pick(
+                        format!("⚠️  录音振幅极低（max={:.6}），麦克风可能未授权。", max_amp),
+                        format!("⚠️  Recording amplitude is very low (max={:.6}). Microphone permission may be missing.", max_amp),
+                    )
+                } else {
+                    ui.pick(
+                        format!("⚠️  系统音频振幅极低（max={:.6}），当前目标可能没有有效声音输出。", max_amp),
+                        format!("⚠️  System-audio amplitude is very low (max={:.6}). The current target may not be producing audible output.", max_amp),
+                    )
+                }
             );
-            eprintln!(
-                "{}",
-                ui.pick(
-                    "   请前往：系统设置 > 隐私与安全性 > 麦克风，将 Open Flow.app 添加到列表并启用。",
-                    "   Open System Settings > Privacy & Security > Microphone, then add and enable Open Flow.app.",
-                )
-            );
-            eprintln!(
-                "{}",
-                ui.pick(
-                    "   然后完全退出并重新打开 Open Flow。",
-                    "   Then fully quit and reopen Open Flow."
-                )
-            );
+            if self.capture_mode == "microphone" {
+                eprintln!(
+                    "{}",
+                    ui.pick(
+                        "   请前往：系统设置 > 隐私与安全性 > 麦克风，将 Open Flow.app 添加到列表并启用。",
+                        "   Open System Settings > Privacy & Security > Microphone, then add and enable Open Flow.app.",
+                    )
+                );
+                eprintln!(
+                    "{}",
+                    ui.pick(
+                        "   然后完全退出并重新打开 Open Flow。",
+                        "   Then fully quit and reopen Open Flow."
+                    )
+                );
+            } else {
+                eprintln!(
+                    "{}",
+                    ui.pick(
+                        "   你可以先在诊断页运行桌面音频 / 应用音频探测，确认 ScreenCaptureKit 回调是否正常。",
+                        "   Try the desktop/application audio probes in Diagnostics first to confirm ScreenCaptureKit callbacks are working.",
+                    )
+                );
+            }
             return Ok(());
         }
 
@@ -1055,8 +1448,299 @@ impl Daemon {
         Ok(())
     }
 
+    async fn stop_and_transcribe_dual(
+        &self,
+        tx: &mpsc::Sender<DaemonEvent>,
+        duration: std::time::Duration,
+        perf_session: Option<ActivePerformanceSession>,
+        dual_live_state: Option<DualMeetingLiveState>,
+        microphone_buf: Option<Arc<Mutex<Vec<f32>>>>,
+        system_audio_buf: Option<Arc<Mutex<Vec<f32>>>>,
+    ) -> Result<()> {
+        let ui = crate::common::config::Config::load()
+            .map(|config| crate::common::ui::UiLanguage::from_config(&config))
+            .unwrap_or_default();
+
+        let live_state = dual_live_state.context("会议双路模式缺少实时会话状态")?;
+        let microphone_buf = microphone_buf.context("会议双路模式缺少麦克风缓冲区")?;
+        let system_audio_buf = system_audio_buf.context("会议双路模式缺少系统音频缓冲区")?;
+        *self.dual_meeting_live_state.lock().unwrap() = None;
+
+        for _ in 0..50 {
+            if !live_state.microphone_inflight.load(Ordering::SeqCst)
+                && !live_state.system_audio_inflight.load(Ordering::SeqCst)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        let microphone_info = self
+            .microphone_audio_info()
+            .context("会议双路模式未找到麦克风音频信息")?;
+        let system_audio_info = self
+            .system_audio_info()
+            .context("会议双路模式未找到系统音频信息")?;
+
+        let microphone_tail = Self::collect_dual_source_tail(
+            &microphone_buf,
+            live_state.microphone_cursor.clone(),
+            live_state.microphone_processed_samples.clone(),
+            microphone_info.sample_rate,
+        );
+        let system_audio_tail = Self::collect_dual_source_tail(
+            &system_audio_buf,
+            live_state.system_audio_cursor.clone(),
+            live_state.system_audio_processed_samples.clone(),
+            system_audio_info.sample_rate,
+        );
+        let total_sample_count = live_state
+            .entries
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|entry| entry.sample_count)
+            .sum::<usize>()
+            + microphone_tail.as_ref().map(|tail| tail.0.len()).unwrap_or(0)
+            + system_audio_tail.as_ref().map(|tail| tail.0.len()).unwrap_or(0);
+
+        info!(
+            "[Hotkey] 双路录音已停止，开始转写 (时长 {:.1}s, mic_samples={}, system_samples={})",
+            duration.as_secs_f32(),
+            microphone_tail.as_ref().map(|tail| tail.0.len()).unwrap_or(0),
+            system_audio_tail.as_ref().map(|tail| tail.0.len()).unwrap_or(0)
+        );
+        self.log_memory_checkpoint(
+            "after_recording_buffer_clone",
+            Some(format!(
+                "duration_ms={} sample_count={} microphone_tail_len={} system_audio_tail_len={}",
+                duration.as_millis(),
+                total_sample_count,
+                microphone_tail.as_ref().map(|tail| tail.0.len()).unwrap_or(0),
+                system_audio_tail.as_ref().map(|tail| tail.0.len()).unwrap_or(0),
+            )),
+        );
+        println!(
+            "{}",
+            ui.pick(
+                format!(
+                    "⏹️  录音停止（双路会议模式，{:.1}s / 麦克风 {} 样本 / 系统音频 {} 样本），正在转写...",
+                    duration.as_secs_f32(),
+                    microphone_tail.as_ref().map(|tail| tail.0.len()).unwrap_or(0),
+                    system_audio_tail.as_ref().map(|tail| tail.0.len()).unwrap_or(0)
+                ),
+                format!(
+                    "⏹️  Recording stopped (dual meeting mode, {:.1}s / mic {} samples / system {} samples), transcribing...",
+                    duration.as_secs_f32(),
+                    microphone_tail.as_ref().map(|tail| tail.0.len()).unwrap_or(0),
+                    system_audio_tail.as_ref().map(|tail| tail.0.len()).unwrap_or(0)
+                ),
+            )
+        );
+
+        let resource_after_record_stop = self.sample_resource_snapshot();
+        let mut flushed_entries = Vec::<MeetingTranscriptEntry>::new();
+        if let Some((buffer, started_at_ms, ended_at_ms)) = system_audio_tail {
+            if let Some(entry) = Self::process_dual_source_segment(
+                live_state.session_writer.clone(),
+                live_state.entries.clone(),
+                self.provider.clone(),
+                buffer,
+                "system_audio",
+                "对方",
+                system_audio_info.sample_rate,
+                live_state.system_audio_segment_index.fetch_add(1, Ordering::SeqCst) + 1,
+                started_at_ms,
+                ended_at_ms,
+            )
+            .await?
+            {
+                flushed_entries.push(entry);
+            }
+        }
+        if let Some((buffer, started_at_ms, ended_at_ms)) = microphone_tail {
+            if let Some(entry) = Self::process_dual_source_segment(
+                live_state.session_writer.clone(),
+                live_state.entries.clone(),
+                self.provider.clone(),
+                buffer,
+                "microphone",
+                "我",
+                microphone_info.sample_rate,
+                live_state.microphone_segment_index.fetch_add(1, Ordering::SeqCst) + 1,
+                started_at_ms,
+                ended_at_ms,
+            )
+            .await?
+            {
+                flushed_entries.push(entry);
+            }
+        }
+
+        let mut entries = live_state.entries.lock().unwrap().clone();
+        entries.sort_by_key(|entry| (entry.started_at_ms, entry.segment_index));
+
+        if entries.is_empty() {
+            self.is_processing.store(false, Ordering::SeqCst);
+            self.emit_performance_log(PerformanceLogEntry {
+                schema_version: PERF_SCHEMA_VERSION,
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                created_at_ms: now_unix_ms(),
+                session_id: perf_session.map(|s| s.session_id).unwrap_or(0),
+                status: "empty_dual_buffer".to_string(),
+                provider: self.provider.name().to_string(),
+                trigger_mode: self.trigger_mode.clone(),
+                hotkey: self.hotkey.clone(),
+                segmented: false,
+                segment_count: 0,
+                sample_rate: system_audio_info.sample_rate.max(microphone_info.sample_rate),
+                sample_count: total_sample_count,
+                recording_duration_ms: duration.as_millis() as u64,
+                asr_duration_ms: 0,
+                llm_duration_ms: 0,
+                total_pipeline_ms: 0,
+                output_duration_ms: 0,
+                total_e2e_ms: perf_session
+                    .map(|s| now_unix_ms().saturating_sub(s.started_at_ms))
+                    .unwrap_or(0),
+                llm_attempted: false,
+                llm_changed: false,
+                llm_status: "skipped".to_string(),
+                text_chars: 0,
+                confidence: 0.0,
+                language: None,
+                max_amplitude: 0.0,
+                rms: 0.0,
+                error: Some("both dual-source buffers were empty or too quiet".to_string()),
+                resource_at_record_start: perf_session
+                    .map(|s| s.resource_at_record_start)
+                    .unwrap_or_else(empty_resource_snapshot),
+                resource_after_record_stop,
+                resource_after_asr: empty_resource_snapshot(),
+                resource_after_pipeline: empty_resource_snapshot(),
+            });
+            eprintln!(
+                "{}",
+                ui.pick(
+                    "⚠️  双路会议模式没有采到有效声音，请确认麦克风正常，并且桌面系统音频正在发声。",
+                    "⚠️  Dual meeting mode did not capture usable audio. Check your microphone and make sure desktop system audio is actually playing.",
+                )
+            );
+            return Ok(());
+        }
+
+        let merged_lines = entries
+            .iter()
+            .filter_map(|summary| {
+                let text = summary.text.trim();
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(format!("{}：{}", summary.role_label, text))
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let merged_text = merged_lines.join("\n");
+        let correction = CorrectionOutcome {
+            text: merged_text.clone(),
+            attempted: false,
+            changed: false,
+            duration_ms: 0,
+            status: "skipped_dual_source",
+        };
+        let transcription_id = self.transcription_count.fetch_add(1, Ordering::SeqCst) + 1;
+        let resource_after_asr = self.sample_resource_snapshot();
+        let resource_after_pipeline = resource_after_asr;
+        let asr_duration_ms = entries
+            .iter()
+            .map(|entry| entry.provider_duration_ms)
+            .sum::<u64>();
+        let segment_count = entries.len();
+        let confidence_sum = entries
+            .iter()
+            .map(|entry| entry.confidence)
+            .sum::<f32>();
+        let confidence = confidence_sum / entries.len() as f32;
+        let language = entries
+            .iter()
+            .find_map(|entry| entry.language.clone());
+        let aggregated_summary = AsrExecutionSummary {
+            result: TranscriptionResult {
+                text: merged_text.clone(),
+                confidence,
+                language,
+                duration_ms: asr_duration_ms,
+            },
+            segmented: true,
+            segment_count,
+        };
+
+        self.log_memory_checkpoint(
+            "after_transcribe",
+            Some(format!(
+                "transcription_id={} duration_ms={} sample_count={} text_chars={} mic_chars={} system_chars={}",
+                transcription_id,
+                asr_duration_ms,
+                total_sample_count,
+                correction.text.chars().count(),
+                entries
+                    .iter()
+                    .filter(|entry| entry.source == "microphone")
+                    .map(|entry| entry.text.chars().count())
+                    .sum::<usize>(),
+                entries
+                    .iter()
+                    .filter(|entry| entry.source == "system_audio")
+                    .map(|entry| entry.text.chars().count())
+                    .sum::<usize>(),
+            )),
+        );
+        println!(
+            "[Pipeline] transcription_complete provider={} mode=dual_source asr_duration_ms={} llm_duration_ms=0 total_pipeline_ms={} llm_attempted=false llm_changed=false llm_status=skipped_dual_source final_chars={}",
+            self.provider.name(),
+            asr_duration_ms,
+            asr_duration_ms,
+            correction.text.chars().count()
+        );
+
+        let perf_entry = self.build_performance_entry(
+            perf_session,
+            "completed",
+            duration.as_millis() as u64,
+            system_audio_info.sample_rate.max(microphone_info.sample_rate),
+            total_sample_count,
+            0.0,
+            0.0,
+            &aggregated_summary,
+            &correction,
+            resource_after_record_stop,
+            resource_after_asr,
+            resource_after_pipeline,
+            correction.text.chars().count(),
+            None,
+        );
+
+        tx.send(DaemonEvent::TranscriptionComplete(CompletedTranscription {
+            text: correction.text,
+            perf_entry,
+        }))
+        .await
+        .ok();
+
+        Ok(())
+    }
+
     async fn transcribe_with_segments(
         &self,
+        provider: Arc<dyn AsrProvider>,
+        audio: &[f32],
+        sample_rate: u32,
+    ) -> Result<AsrExecutionSummary> {
+        Self::transcribe_with_segments_static(provider, audio, sample_rate).await
+    }
+
+    async fn transcribe_with_segments_static(
         provider: Arc<dyn AsrProvider>,
         audio: &[f32],
         sample_rate: u32,
@@ -1212,6 +1896,110 @@ impl Daemon {
             segmented: true,
             segment_count: total_segments,
         })
+    }
+
+    fn collect_dual_source_tail(
+        buffer_arc: &Arc<Mutex<Vec<f32>>>,
+        cursor: Arc<AtomicUsize>,
+        processed_samples: Arc<AtomicUsize>,
+        sample_rate: u32,
+    ) -> Option<(Vec<f32>, u64, u64)> {
+        let cursor_value = cursor.load(Ordering::SeqCst);
+        let processed = processed_samples.load(Ordering::SeqCst);
+        let mut guard = buffer_arc.lock().unwrap();
+        if cursor_value >= guard.len() {
+            guard.clear();
+            cursor.store(0, Ordering::SeqCst);
+            return None;
+        }
+
+        let tail = guard[cursor_value..].to_vec();
+        guard.clear();
+        cursor.store(0, Ordering::SeqCst);
+        if tail.is_empty() {
+            return None;
+        }
+
+        let started_sample = processed.saturating_add(cursor_value);
+        let ended_sample = started_sample.saturating_add(tail.len());
+        Some((
+            tail,
+            started_sample as u64 * 1000 / sample_rate as u64,
+            ended_sample as u64 * 1000 / sample_rate as u64,
+        ))
+    }
+
+    async fn process_dual_source_segment(
+        session_writer: MeetingSessionWriter,
+        entries: Arc<Mutex<Vec<MeetingTranscriptEntry>>>,
+        provider: Arc<dyn AsrProvider>,
+        buffer: Vec<f32>,
+        source: &'static str,
+        role_label: &'static str,
+        sample_rate: u32,
+        segment_index: u64,
+        started_at_ms: u64,
+        ended_at_ms: u64,
+    ) -> Result<Option<MeetingTranscriptEntry>> {
+        if buffer.is_empty() {
+            println!("[Pipeline] dual_source_skip source={} reason=empty_buffer", source);
+            return Ok(None);
+        }
+
+        let max_amplitude = buffer.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+        let rms = (buffer.iter().map(|x| x * x).sum::<f32>() / buffer.len() as f32).sqrt();
+        println!(
+            "[Pipeline] dual_source_prepare source={} segment_index={} sample_count={} sample_rate={} max_amp={:.6} rms={:.6}",
+            source,
+            segment_index,
+            buffer.len(),
+            sample_rate,
+            max_amplitude,
+            rms
+        );
+
+        if max_amplitude < 0.001 {
+            println!(
+                "[Pipeline] dual_source_skip source={} reason=low_amplitude max_amp={:.6}",
+                source, max_amplitude
+            );
+            return Ok(None);
+        }
+
+        let asr = Self::transcribe_with_segments_static(provider, &buffer, sample_rate).await?;
+        let trimmed_text = asr.result.text.trim().to_string();
+        if trimmed_text.is_empty() {
+            println!(
+                "[Pipeline] dual_source_skip source={} reason=empty_transcript segment_index={}",
+                source, segment_index
+            );
+            return Ok(None);
+        }
+
+        let wav_path = session_writer
+            .save_segment_wav(source, segment_index, sample_rate, &buffer)?
+            .display()
+            .to_string();
+        let entry = MeetingTranscriptEntry {
+            session_id: session_writer.session_id(),
+            segment_index,
+            source: source.to_string(),
+            role_label: role_label.to_string(),
+            started_at_ms,
+            ended_at_ms,
+            sample_rate,
+            sample_count: buffer.len(),
+            text: trimmed_text,
+            confidence: asr.result.confidence,
+            language: asr.result.language.clone(),
+            provider_duration_ms: asr.result.duration_ms,
+            wav_path,
+            created_at_ms: now_unix_ms(),
+        };
+        let mut guard = entries.lock().unwrap();
+        session_writer.append_entry(&entry)?;
+        guard.push(entry.clone());
+        Ok(Some(entry))
     }
 
     async fn maybe_correct_text(&self, text: String) -> CorrectionOutcome {
@@ -1376,14 +2164,85 @@ impl Daemon {
         }
     }
 
+    fn microphone_audio_info(&self) -> Option<crate::audio::AudioInfo> {
+        self.audio_capture.as_ref().map(|audio_capture| audio_capture.get_info())
+    }
+
+    fn system_audio_info(&self) -> Option<crate::audio::AudioInfo> {
+        if !self.uses_system_audio_capture() {
+            return None;
+        }
+
+        let mut config = crate::common::config::Config::load().unwrap_or_default();
+        config.capture_mode = match self.capture_mode.as_str() {
+            "system_audio_application" => "system_audio_application".to_string(),
+            _ => "system_audio_desktop".to_string(),
+        };
+        config.system_audio_target_pid = self.system_audio_target_pid.clone();
+        config.system_audio_target_name = self.system_audio_target_name.clone();
+        Some(SystemAudioCapture::info_from_config(&config))
+    }
+
+    fn current_audio_info(&self) -> crate::audio::AudioInfo {
+        if self.is_dual_capture_mode() {
+            return crate::audio::AudioInfo {
+                device_name: "Desktop Audio + Microphone".to_string(),
+                sample_rate: self
+                    .system_audio_info()
+                    .map(|info| info.sample_rate)
+                    .or_else(|| self.microphone_audio_info().map(|info| info.sample_rate))
+                    .unwrap_or(48_000),
+                channels: 1,
+                sample_format: "F32".to_string(),
+            };
+        }
+
+        if let Some(audio_capture) = &self.audio_capture {
+            audio_capture.get_info()
+        } else {
+            self.system_audio_info().unwrap_or(crate::audio::AudioInfo {
+                device_name: "Unknown Audio".to_string(),
+                sample_rate: 48_000,
+                channels: 1,
+                sample_format: "F32".to_string(),
+            })
+        }
+    }
+
     fn log_memory_checkpoint(&self, checkpoint: &str, extra: Option<String>) {
         let state = self.state.lock().unwrap();
-        let buffer_info = {
+        let buffer_info = if self.is_dual_capture_mode() {
+            let microphone_info = self
+                .microphone_recording_buffer
+                .lock()
+                .unwrap()
+                .clone()
+                .map(|buffer_arc| {
+                    let buffer = buffer_arc.lock().unwrap();
+                    (buffer.len(), buffer.capacity())
+                })
+                .unwrap_or((0, 0));
+            let system_audio_info = self
+                .system_audio_recording_buffer
+                .lock()
+                .unwrap()
+                .clone()
+                .map(|buffer_arc| {
+                    let buffer = buffer_arc.lock().unwrap();
+                    (buffer.len(), buffer.capacity())
+                })
+                .unwrap_or((0, 0));
+            (
+                microphone_info.0 + system_audio_info.0,
+                microphone_info.1 + system_audio_info.1,
+            )
+        } else {
             let buffer_arc = self.recording_buffer.lock().unwrap().clone();
             let buffer = buffer_arc.lock().unwrap();
             (buffer.len(), buffer.capacity())
         };
-        let active_stream = self.active_stream.lock().unwrap().is_some();
+        let active_stream = self.active_stream.lock().unwrap().is_some()
+            || self.active_system_audio.lock().unwrap().is_some();
         let sessions = self.recording_session_count.load(Ordering::SeqCst);
         let transcriptions = self.transcription_count.load(Ordering::SeqCst);
 

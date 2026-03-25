@@ -196,41 +196,7 @@ impl AudioCapture {
 
     /// 将缓冲区保存为 WAV 文件
     pub fn save_buffer_to_wav(&self, buffer: &[f32], output_path: &Path) -> Result<()> {
-        info!("💾 保存录音到: {:?}", output_path);
-
-        // 确保目录存在
-        if let Some(parent) = output_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        // WAV 文件规格
-        let spec = WavSpec {
-            channels: self.channels,
-            sample_rate: self.sample_rate,
-            bits_per_sample: 32,
-            sample_format: hound::SampleFormat::Float,
-        };
-
-        let file = File::create(output_path)
-            .with_context(|| format!("无法创建文件: {:?}", output_path))?;
-        let writer = BufWriter::new(file);
-        let mut wav_writer = WavWriter::new(writer, spec).context("创建 WAV 写入器失败")?;
-
-        // 写入样本
-        for &sample in buffer {
-            wav_writer.write_sample(sample)?;
-        }
-
-        wav_writer.finalize().context("完成 WAV 文件写入失败")?;
-
-        let duration_secs = buffer.len() as f32 / self.sample_rate as f32 / self.channels as f32;
-        info!(
-            "✓ 录音已保存: {} 样本, {:.2} 秒",
-            buffer.len(),
-            duration_secs
-        );
-
-        Ok(())
+        save_buffer_to_wav_with_spec(buffer, self.sample_rate, self.channels, output_path)
     }
 
     /// 创建并启动一个实时录音流，音频数据写入共享缓冲区。
@@ -351,6 +317,46 @@ impl AudioCapture {
             sample_format: format!("{:?}", self.sample_format),
         }
     }
+}
+
+pub fn save_buffer_to_wav_with_spec(
+    buffer: &[f32],
+    sample_rate: u32,
+    channels: u16,
+    output_path: &Path,
+) -> Result<()> {
+    info!("💾 保存录音到: {:?}", output_path);
+
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let spec = WavSpec {
+        channels,
+        sample_rate,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+
+    let file = File::create(output_path)
+        .with_context(|| format!("无法创建文件: {:?}", output_path))?;
+    let writer = BufWriter::new(file);
+    let mut wav_writer = WavWriter::new(writer, spec).context("创建 WAV 写入器失败")?;
+
+    for &sample in buffer {
+        wav_writer.write_sample(sample)?;
+    }
+
+    wav_writer.finalize().context("完成 WAV 文件写入失败")?;
+
+    let duration_secs = buffer.len() as f32 / sample_rate as f32 / channels as f32;
+    info!(
+        "✓ 录音已保存: {} 样本, {:.2} 秒",
+        buffer.len(),
+        duration_secs
+    );
+
+    Ok(())
 }
 
 pub fn list_input_devices() -> Result<AudioDeviceSnapshot> {

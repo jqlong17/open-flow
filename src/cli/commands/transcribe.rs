@@ -1,11 +1,13 @@
 use anyhow::{Context, Result};
 use open_flow::model_store;
+use open_flow::system_audio::SystemAudioCapture;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::info;
 
 use crate::asr::AsrEngine;
-use crate::audio::AudioCapture;
+use crate::audio::{save_buffer_to_wav_with_spec, AudioCapture};
 
 /// 单次转写 - 录音并识别
 pub async fn run(
@@ -29,16 +31,6 @@ pub async fn run(
         println!("📂 使用已有音频文件: {:?}", input_file);
         input_file
     } else {
-        let audio_capture =
-            AudioCapture::new_with_device_name(config.resolved_input_source().as_deref())
-                .context("初始化音频采集器失败")?;
-        let audio_info = audio_capture.get_info();
-        println!("音频设备: {}", audio_info.device_name);
-        println!(
-            "  采样率: {}Hz, 通道: {}",
-            audio_info.sample_rate, audio_info.channels
-        );
-        println!();
         // 确定录音时长
         let duration = if duration_secs == 0 {
             // 交互模式：等待用户按键停止
@@ -64,7 +56,52 @@ pub async fn run(
             .as_secs();
         let recorded_path = temp_dir.join(format!("open-flow-transcribe-{}.wav", timestamp));
 
-        audio_capture.record_to_file(duration, &recorded_path)?;
+        let capture_mode = config.resolved_capture_mode();
+        if capture_mode == "microphone" {
+            let audio_capture =
+                AudioCapture::new_with_device_name(config.resolved_input_source().as_deref())
+                    .context("初始化音频采集器失败")?;
+            let audio_info = audio_capture.get_info();
+            println!("音频设备: {}", audio_info.device_name);
+            println!(
+                "  采样率: {}Hz, 通道: {}",
+                audio_info.sample_rate, audio_info.channels
+            );
+            println!();
+
+            audio_capture.record_to_file(duration, &recorded_path)?;
+        } else {
+            let audio_info = SystemAudioCapture::info_from_config(&config);
+            println!("音频设备: {}", audio_info.device_name);
+            println!(
+                "  采样率: {}Hz, 通道: {}",
+                audio_info.sample_rate, audio_info.channels
+            );
+            println!();
+
+            let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
+            let capture = SystemAudioCapture::spawn_from_config(&config, buffer.clone())
+                .context("启动系统音频采集失败")?;
+            std::thread::sleep(duration);
+            capture.stop();
+
+            let samples = {
+                let mut guard = buffer.lock().unwrap();
+                std::mem::take(&mut *guard)
+            };
+
+            if samples.is_empty() {
+                anyhow::bail!("系统音频缓冲区为空，当前目标可能没有产生声音");
+            }
+
+            save_buffer_to_wav_with_spec(
+                &samples,
+                audio_info.sample_rate,
+                audio_info.channels,
+                &recorded_path,
+            )?;
+        }
+
         println!("✓ 录音完成");
         recorded_path
     };

@@ -63,8 +63,16 @@ pub struct Config {
     pub hotkey: String,
     #[serde(default = "default_trigger_mode")]
     pub trigger_mode: String,
+    #[serde(default = "default_capture_mode")]
+    pub capture_mode: String,
     #[serde(default)]
     pub input_source: String,
+    #[serde(default)]
+    pub system_audio_target_pid: String,
+    #[serde(default)]
+    pub system_audio_target_name: String,
+    #[serde(default)]
+    pub system_audio_target_bundle_id: String,
     #[serde(default)]
     pub chinese_conversion: String,
     #[serde(default)]
@@ -88,6 +96,9 @@ fn default_hotkey() -> String {
 }
 fn default_trigger_mode() -> String {
     "toggle".into()
+}
+fn default_capture_mode() -> String {
+    "microphone".into()
 }
 
 impl Config {
@@ -115,7 +126,11 @@ impl Default for Config {
             groq_language: String::new(),
             hotkey: default_hotkey(),
             trigger_mode: default_trigger_mode(),
+            capture_mode: default_capture_mode(),
             input_source: String::new(),
+            system_audio_target_pid: String::new(),
+            system_audio_target_name: String::new(),
+            system_audio_target_bundle_id: String::new(),
             chinese_conversion: String::new(),
             performance_log_enabled: String::new(),
         }
@@ -154,6 +169,15 @@ impl Config {
             None
         } else {
             Some(source.to_string())
+        }
+    }
+
+    pub fn resolved_capture_mode(&self) -> String {
+        match self.capture_mode.trim() {
+            "system_audio_desktop" => "system_audio_desktop".to_string(),
+            "system_audio_application" => "system_audio_application".to_string(),
+            "system_audio_microphone" => "system_audio_microphone".to_string(),
+            _ => default_capture_mode(),
         }
     }
 

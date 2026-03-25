@@ -36,6 +36,76 @@ private struct InputDeviceSnapshot: Decodable {
     }
 }
 
+struct SystemAudioDisplayOption: Identifiable, Decodable, Hashable {
+    let id: UInt32
+    let width: Int
+    let height: Int
+
+    var title: String {
+        "Display \(id) • \(width)x\(height)"
+    }
+}
+
+struct SystemAudioApplicationOption: Identifiable, Decodable, Hashable {
+    let processID: Int32
+    let bundleIdentifier: String
+    let applicationName: String
+
+    var id: Int32 { processID }
+
+    enum CodingKeys: String, CodingKey {
+        case processID = "process_id"
+        case bundleIdentifier = "bundle_identifier"
+        case applicationName = "application_name"
+    }
+}
+
+private struct SystemAudioPermissionSnapshot: Decodable {
+    let screenRecording: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case screenRecording = "screen_recording"
+    }
+}
+
+private struct SystemAudioShareableSnapshot: Decodable {
+    let screenRecordingGranted: Bool
+    let displays: [SystemAudioDisplayOption]
+    let applications: [SystemAudioApplicationOption]
+    let windowCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case screenRecordingGranted = "screen_recording_granted"
+        case displays
+        case applications
+        case windowCount = "window_count"
+    }
+}
+
+private struct SystemAudioProbeSnapshot: Decodable {
+    let mode: String
+    let target: String
+    let durationSeconds: Double
+    let callbacks: Int
+    let sampleCount: Int
+    let sampleRate: Double
+    let channels: Int
+    let firstCallbackLatencyMs: Double?
+    let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case mode
+        case target
+        case durationSeconds = "duration_seconds"
+        case callbacks
+        case sampleCount = "sample_count"
+        case sampleRate = "sample_rate"
+        case channels
+        case firstCallbackLatencyMs = "first_callback_latency_ms"
+        case error
+    }
+}
+
 /// Manages reading/writing Open Flow's config.toml and daemon lifecycle
 class ConfigManager: ObservableObject {
     // Config fields
@@ -50,7 +120,11 @@ class ConfigManager: ObservableObject {
     @Published var groqLanguage: String = ""
     @Published var hotkey: String = "right_cmd"
     @Published var triggerMode: String = "toggle"
+    @Published var captureMode: String = "microphone"
     @Published var inputSource: String = ""
+    @Published var systemAudioTargetPID: String = ""
+    @Published var systemAudioTargetName: String = ""
+    @Published var systemAudioTargetBundleID: String = ""
     @Published var chineseConversion: String = ""
     @Published var performanceLogEnabled: String = ""
     @Published var modelPath: String = ""
@@ -83,6 +157,15 @@ class ConfigManager: ObservableObject {
     @Published var logContent: String = ""
     @Published var personalVocabulary: String = ""
     @Published var correctionSystemPrompt: String = ""
+    @Published var systemAudioScreenRecordingGranted = false
+    @Published var systemAudioDisplays: [SystemAudioDisplayOption] = []
+    @Published var systemAudioApplications: [SystemAudioApplicationOption] = []
+    @Published var systemAudioWindowCount = 0
+    @Published var systemAudioStatus: String = ""
+    @Published var systemAudioDesktopProbeSummary: String = ""
+    @Published var systemAudioApplicationProbeSummary: String = ""
+    @Published var systemAudioProbeRunning = false
+    @Published var selectedSystemAudioApplicationPID: String = ""
 
     static let groqModels = ["whisper-large-v3-turbo", "whisper-large-v3"]
     static let localModelPresets = ["quantized", "fp16"]
@@ -95,6 +178,7 @@ class ConfigManager: ObservableObject {
     ]
     static let hotkeys = ["right_cmd", "right_option", "right_control", "right_shift", "fn", "f13"]
     static let triggerModes = ["toggle", "hold"]
+    static let captureModes = ["microphone", "system_audio_desktop", "system_audio_microphone", "system_audio_application"]
 
     private var configPath: URL
     private var dataDir: URL
@@ -303,7 +387,11 @@ class ConfigManager: ObservableObject {
             case "groq_language": groqLanguage = value
             case "hotkey": hotkey = value
             case "trigger_mode": triggerMode = value
+            case "capture_mode": captureMode = value.isEmpty ? "microphone" : value
             case "input_source": inputSource = value
+            case "system_audio_target_pid": systemAudioTargetPID = value
+            case "system_audio_target_name": systemAudioTargetName = value
+            case "system_audio_target_bundle_id": systemAudioTargetBundleID = value
             case "chinese_conversion": chineseConversion = value
             case "performance_log_enabled": performanceLogEnabled = value
             case "model_path": modelPath = value
@@ -336,7 +424,11 @@ class ConfigManager: ObservableObject {
             ("groq_language", groqLanguage),
             ("hotkey", hotkey),
             ("trigger_mode", triggerMode),
+            ("capture_mode", normalizedCaptureMode),
             ("input_source", inputSource),
+            ("system_audio_target_pid", systemAudioTargetPID),
+            ("system_audio_target_name", systemAudioTargetName),
+            ("system_audio_target_bundle_id", systemAudioTargetBundleID),
             ("chinese_conversion", chineseConversion),
             ("performance_log_enabled", performanceLogEnabled),
             ("model_path", modelPath),
@@ -380,6 +472,19 @@ class ConfigManager: ObservableObject {
     var normalizedCorrectionModel: String {
         let trimmed = correctionModel.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "GLM-4.7-Flash" : trimmed
+    }
+
+    var normalizedCaptureMode: String {
+        switch captureMode.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "system_audio_desktop":
+            return "system_audio_desktop"
+        case "system_audio_microphone":
+            return "system_audio_microphone"
+        case "system_audio_application":
+            return "system_audio_application"
+        default:
+            return "microphone"
+        }
     }
 
     var normalizedUiLanguage: String {
@@ -611,6 +716,36 @@ class ConfigManager: ObservableObject {
         return nil
     }
 
+    private func findSystemAudioHelperBinary() -> String? {
+        if let selfPath = Bundle.main.executableURL?.deletingLastPathComponent() {
+            let bundled = selfPath.appendingPathComponent("OpenFlowSystemAudioHelper")
+            if FileManager.default.isExecutableFile(atPath: bundled.path) {
+                return bundled.path
+            }
+        }
+
+        let appSupportCandidates = [
+            "settings-app/.build/arm64-apple-macosx/release/OpenFlowSystemAudioHelper",
+            "settings-app/.build/x86_64-apple-macosx/release/OpenFlowSystemAudioHelper",
+            "settings-app/.build/release/OpenFlowSystemAudioHelper",
+        ]
+
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+
+        for relativePath in appSupportCandidates {
+            let candidate = repoRoot.appendingPathComponent(relativePath)
+            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                return candidate.path
+            }
+        }
+
+        return nil
+    }
+
     /// Find the .app bundle containing this settings binary
     private func findAppBundle() -> URL? {
         // Walk up from our binary to find the .app bundle
@@ -791,6 +926,258 @@ class ConfigManager: ObservableObject {
     }
 
     // MARK: - Hotkey Test
+
+    // MARK: - System Audio PoC
+
+    func refreshSystemAudioDiagnostics() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+
+            let permissionSnapshot = self.fetchSystemAudioPermissionSnapshot()
+            let shareableSnapshot = self.fetchSystemAudioShareableSnapshot()
+
+            DispatchQueue.main.async {
+                if let permissionSnapshot {
+                    self.systemAudioScreenRecordingGranted = permissionSnapshot.screenRecording
+                }
+
+                if let shareableSnapshot {
+                    self.systemAudioScreenRecordingGranted = shareableSnapshot.screenRecordingGranted
+                    self.systemAudioDisplays = shareableSnapshot.displays
+                    self.systemAudioApplications = shareableSnapshot.applications
+                    self.systemAudioWindowCount = shareableSnapshot.windowCount
+                    if self.selectedSystemAudioApplicationPID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       let firstApp = shareableSnapshot.applications.first {
+                        self.selectedSystemAudioApplicationPID = String(firstApp.processID)
+                    }
+                    if self.systemAudioTargetPID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       let firstApp = shareableSnapshot.applications.first {
+                        self.systemAudioTargetPID = String(firstApp.processID)
+                        self.systemAudioTargetName = firstApp.applicationName
+                        self.systemAudioTargetBundleID = firstApp.bundleIdentifier
+                    }
+                    self.systemAudioStatus = self.usesEnglish
+                        ? "Fetched \(shareableSnapshot.displays.count) displays and \(shareableSnapshot.applications.count) applications."
+                        : "已获取 \(shareableSnapshot.displays.count) 个显示器和 \(shareableSnapshot.applications.count) 个应用。"
+                } else {
+                    self.systemAudioDisplays = []
+                    self.systemAudioApplications = []
+                    self.systemAudioWindowCount = 0
+                    self.systemAudioStatus = self.usesEnglish
+                        ? "System audio helper is available, but shareable content is not ready yet."
+                        : "系统音频 helper 已可用，但可捕获内容暂时还未就绪。"
+                }
+            }
+        }
+    }
+
+    func requestSystemAudioPermission() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            guard let binary = self.findSystemAudioHelperBinary() else {
+                DispatchQueue.main.async {
+                    self.systemAudioStatus = self.usesEnglish
+                        ? "System audio helper not found."
+                        : "未找到系统音频 helper。"
+                }
+                return
+            }
+
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: binary)
+            task.arguments = ["request-permission"]
+
+            let stdout = Pipe()
+            task.standardOutput = stdout
+            task.standardError = Pipe()
+
+            do {
+                try task.run()
+                task.waitUntilExit()
+            } catch {
+                DispatchQueue.main.async {
+                    self.systemAudioStatus = self.usesEnglish
+                        ? "Failed to request screen recording permission: \(error.localizedDescription)"
+                        : "请求屏幕录制权限失败：\(error.localizedDescription)"
+                }
+                return
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                self.refreshSystemAudioDiagnostics()
+            }
+        }
+    }
+
+    private func fetchSystemAudioPermissionSnapshot() -> SystemAudioPermissionSnapshot? {
+        guard let binary = findSystemAudioHelperBinary() else { return nil }
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: binary)
+        task.arguments = ["permissions"]
+
+        let stdout = Pipe()
+        task.standardOutput = stdout
+        task.standardError = Pipe()
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        guard task.terminationStatus == 0 else { return nil }
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        guard !data.isEmpty else { return nil }
+        return try? JSONDecoder().decode(SystemAudioPermissionSnapshot.self, from: data)
+    }
+
+    private func fetchSystemAudioShareableSnapshot() -> SystemAudioShareableSnapshot? {
+        guard let binary = findSystemAudioHelperBinary() else { return nil }
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: binary)
+        task.arguments = ["list-shareable"]
+
+        let stdout = Pipe()
+        task.standardOutput = stdout
+        task.standardError = Pipe()
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        guard task.terminationStatus == 0 else { return nil }
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        guard !data.isEmpty else { return nil }
+        return try? JSONDecoder().decode(SystemAudioShareableSnapshot.self, from: data)
+    }
+
+    func runDesktopSystemAudioProbe() {
+        runSystemAudioProbe(arguments: ["probe-desktop", "--seconds", "3"]) { [weak self] snapshot in
+            guard let self = self else { return }
+            self.systemAudioDesktopProbeSummary = self.describeProbeSnapshot(snapshot)
+        }
+    }
+
+    func runApplicationSystemAudioProbe() {
+        let trimmed = selectedSystemAudioApplicationPID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let pid = Int32(trimmed) else {
+            systemAudioApplicationProbeSummary = usesEnglish
+                ? "Pick an application first."
+                : "请先选择一个应用。"
+            return
+        }
+
+        if let app = systemAudioApplications.first(where: { String($0.processID) == trimmed }) {
+            systemAudioTargetPID = trimmed
+            systemAudioTargetName = app.applicationName
+            systemAudioTargetBundleID = app.bundleIdentifier
+        }
+
+        runSystemAudioProbe(arguments: ["probe-application", "--pid", String(pid), "--seconds", "3"]) { [weak self] snapshot in
+            guard let self = self else { return }
+            self.systemAudioApplicationProbeSummary = self.describeProbeSnapshot(snapshot)
+        }
+    }
+
+    private func runSystemAudioProbe(arguments: [String], onSuccess: @escaping (SystemAudioProbeSnapshot) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            guard let binary = self.findSystemAudioHelperBinary() else {
+                DispatchQueue.main.async {
+                    self.systemAudioStatus = self.usesEnglish
+                        ? "System audio helper not found."
+                        : "未找到系统音频 helper。"
+                }
+                return
+            }
+
+            DispatchQueue.main.async {
+                self.systemAudioProbeRunning = true
+            }
+
+            defer {
+                DispatchQueue.main.async {
+                    self.systemAudioProbeRunning = false
+                }
+            }
+
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: binary)
+            task.arguments = arguments
+
+            let stdout = Pipe()
+            task.standardOutput = stdout
+            task.standardError = Pipe()
+
+            do {
+                try task.run()
+                task.waitUntilExit()
+            } catch {
+                DispatchQueue.main.async {
+                    self.systemAudioStatus = self.usesEnglish
+                        ? "Failed to run system audio probe: \(error.localizedDescription)"
+                        : "运行系统音频探测失败：\(error.localizedDescription)"
+                }
+                return
+            }
+
+            guard task.terminationStatus == 0 else {
+                DispatchQueue.main.async {
+                    self.systemAudioStatus = self.usesEnglish
+                        ? "System audio probe exited with code \(task.terminationStatus)."
+                        : "系统音频探测退出码为 \(task.terminationStatus)。"
+                }
+                return
+            }
+
+            let data = stdout.fileHandleForReading.readDataToEndOfFile()
+            guard !data.isEmpty,
+                  let snapshot = try? JSONDecoder().decode(SystemAudioProbeSnapshot.self, from: data) else {
+                DispatchQueue.main.async {
+                    self.systemAudioStatus = self.usesEnglish
+                        ? "System audio probe returned unreadable output."
+                        : "系统音频探测返回了无法解析的输出。"
+                }
+                return
+            }
+
+            DispatchQueue.main.async {
+                onSuccess(snapshot)
+            }
+        }
+    }
+
+    private func describeProbeSnapshot(_ snapshot: SystemAudioProbeSnapshot) -> String {
+        let callbackPart = usesEnglish
+            ? "\(snapshot.callbacks) callbacks"
+            : "\(snapshot.callbacks) 次回调"
+        let samplePart = usesEnglish
+            ? "\(snapshot.sampleCount) samples"
+            : "\(snapshot.sampleCount) 个样本"
+        let formatPart = snapshot.sampleRate > 0 && snapshot.channels > 0
+            ? String(format: usesEnglish ? "%.0f Hz / %d ch" : "%.0f Hz / %d 通道", snapshot.sampleRate, snapshot.channels)
+            : (usesEnglish ? "format pending" : "格式待定")
+        let latencyPart: String
+        if let latency = snapshot.firstCallbackLatencyMs {
+            latencyPart = String(format: usesEnglish ? "first callback %.0f ms" : "首帧回调 %.0f ms", latency)
+        } else {
+            latencyPart = usesEnglish ? "no callback yet" : "尚未收到回调"
+        }
+
+        if let error = snapshot.error, !error.isEmpty {
+            return usesEnglish
+                ? "\(snapshot.target) • \(error)"
+                : "\(snapshot.target) • \(error)"
+        }
+
+        return "\(snapshot.target) • \(callbackPart) • \(samplePart) • \(formatPart) • \(latencyPart)"
+    }
 
     func startHotkeyTest() {
         hotkeyTestActive = true

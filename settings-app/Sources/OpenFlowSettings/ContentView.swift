@@ -60,6 +60,10 @@ struct ContentView: View {
     private let pageSpacing: CGFloat = 16
 
     private var isEnglish: Bool { config.normalizedUiLanguage == "en" }
+    private var selectedCaptureMode: String { config.normalizedCaptureMode }
+    private var selectedCaptureModeUsesMicrophone: Bool {
+        selectedCaptureMode == "microphone" || selectedCaptureMode == "system_audio_microphone"
+    }
 
     private func tr(_ zh: String, _ en: String) -> String {
         isEnglish ? en : zh
@@ -285,7 +289,40 @@ struct ContentView: View {
                     }
 
                     rowDivider
-                    SettingsRow(label: tr("输入源", "Input Source"), description: tr("明确指定录音使用的输入设备。留在“系统默认”时会跟随 macOS 当前默认输入设备；如果你在会议或系统内录场景里使用虚拟声卡，也可以在这里固定选中。", "Choose the exact audio input device Open Flow should record from. Leave it on System Default to follow macOS, or pin a virtual device here for meeting/system-audio workflows.")) {
+                    SettingsRow(label: tr("录音模式", "Recording Mode"), description: tr("先决定 Open Flow 这次要从哪里录音。会议场景推荐使用“桌面音频 + 麦克风”，这样既能记录会议播放出来的声音，也能记录你自己的发言。", "Choose where Open Flow should record from first. For meeting scenarios, prefer “Desktop Audio + Microphone” so it can capture both meeting output and your own speech.")) {
+                        VStack(alignment: .trailing, spacing: 8) {
+                            Picker("", selection: $config.captureMode) {
+                                Text(tr("麦克风", "Microphone")).tag("microphone")
+                                Text(tr("桌面音频（实验）", "Desktop Audio (Experimental)")).tag("system_audio_desktop")
+                                Text(tr("桌面音频 + 麦克风（会议）", "Desktop Audio + Microphone (Meeting)")).tag("system_audio_microphone")
+                                Text(tr("应用音频（实验）", "Application Audio (Experimental)")).tag("system_audio_application")
+                            }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                            .frame(width: 320)
+
+                            Text(
+                                selectedCaptureMode == "system_audio_microphone"
+                                    ? tr("会议模式会同时采集桌面系统声音与麦克风输入，并尝试分别输出“对方 / 我”的结果。", "Meeting mode captures both desktop system audio and your microphone, then tries to output separate “Others / Me” results.")
+                                    : selectedCaptureMode == "system_audio_desktop"
+                                        ? tr("桌面音频模式只采集系统播放出来的声音，不会记录你的麦克风发言。", "Desktop audio mode only captures system playback and does not record your microphone.")
+                                        : selectedCaptureMode == "system_audio_application"
+                                            ? tr("应用音频模式仍保留为实验能力，建议优先使用桌面音频或会议模式。", "Application audio remains experimental. Prefer desktop audio or meeting mode when possible.")
+                                            : tr("麦克风模式只使用你选择的麦克风输入设备。", "Microphone mode only uses the microphone input device you choose below.")
+                            )
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                            .frame(width: 360, alignment: .trailing)
+                            .multilineTextAlignment(.trailing)
+                        }
+                    }
+
+                    if selectedCaptureModeUsesMicrophone {
+                        rowDivider
+                    }
+
+                    if selectedCaptureModeUsesMicrophone {
+                        SettingsRow(label: tr("麦克风输入源", "Microphone Input"), description: tr("选择会议模式或麦克风模式下要使用的麦克风设备。留在“系统默认”时会跟随 macOS 当前默认输入设备。", "Choose which microphone device to use in microphone or meeting mode. Leave it on System Default to follow the current macOS default input.")) {
                         VStack(alignment: .trailing, spacing: 8) {
                             Picker("", selection: $config.inputSource) {
                                 Text(tr("系统默认", "System Default")).tag("")
@@ -316,6 +353,7 @@ struct ContentView: View {
                                 .frame(width: 320, alignment: .trailing)
                                 .multilineTextAlignment(.trailing)
                         }
+                    }
                     }
                 }
             }
@@ -699,6 +737,168 @@ struct ContentView: View {
             }
             #endif
 
+            SettingsCard(title: tr("系统音频实验诊断", "System Audio Experimental Diagnostics"), subtitle: tr("这里专门用于权限检查、探测和排障。正式的录音模式选择已经合并到上方的通用设置中。", "This area is now dedicated to permissions, probing, and troubleshooting. The main recording-mode selection has been moved into the general settings above.")) {
+                VStack(spacing: 0) {
+                    SettingsRow(label: tr("屏幕录制权限", "Screen Recording Permission"), description: tr("ScreenCaptureKit 枚举和捕获系统音频前，需要先获得 macOS 的屏幕录制授权。", "ScreenCaptureKit needs macOS screen recording permission before it can enumerate or capture system audio.")) {
+                        HStack(spacing: 10) {
+                            StatusPill(
+                                text: config.systemAudioScreenRecordingGranted ? tr("已授权", "Granted") : tr("未授权", "Not Granted"),
+                                tone: config.systemAudioScreenRecordingGranted ? .success : .warning
+                            )
+
+                            SoftActionButton(
+                                title: tr("请求权限", "Request Access"),
+                                icon: "rectangle.and.hand.point.up.left",
+                                fill: Color(red: 0.92, green: 0.95, blue: 0.99),
+                                foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
+                            ) {
+                                config.requestSystemAudioPermission()
+                            }
+
+                            SoftActionButton(
+                                title: tr("刷新状态", "Refresh"),
+                                icon: "arrow.clockwise",
+                                fill: Color(red: 0.92, green: 0.95, blue: 0.99),
+                                foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
+                            ) {
+                                config.refreshSystemAudioDiagnostics()
+                            }
+                        }
+                    }
+
+                    rowDivider
+                    SettingsRow(label: tr("可捕获对象", "Shareable Targets"), description: tr("用于验证当前系统中哪些显示器和应用可以作为 ScreenCaptureKit 的音频捕获对象。", "Use this to verify which displays and applications are currently available as ScreenCaptureKit capture targets.")) {
+                        VStack(alignment: .trailing, spacing: 8) {
+                            HStack(spacing: 8) {
+                                StatusPill(
+                                    text: "\(config.systemAudioDisplays.count) \(tr("个显示器", "displays"))",
+                                    tone: .info
+                                )
+                                StatusPill(
+                                    text: "\(config.systemAudioApplications.count) \(tr("个应用", "apps"))",
+                                    tone: .info
+                                )
+                                StatusPill(
+                                    text: "\(config.systemAudioWindowCount) \(tr("个窗口", "windows"))",
+                                    tone: .neutral
+                                )
+                            }
+
+                            if !config.systemAudioStatus.isEmpty {
+                                Text(config.systemAudioStatus)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                                    .frame(width: 360, alignment: .trailing)
+                                    .multilineTextAlignment(.trailing)
+                            }
+                        }
+                    }
+
+                    SettingsRow(label: tr("桌面音频探测", "Desktop Audio Probe"), description: tr("运行一个 3 秒钟的 ScreenCaptureKit 桌面音频探测，验证系统是否真的开始返回音频回调。", "Run a 3-second ScreenCaptureKit desktop-audio probe to verify that the system is actually returning audio callbacks.")) {
+                        VStack(alignment: .trailing, spacing: 8) {
+                            SoftActionButton(
+                                title: tr("运行桌面探测", "Run Desktop Probe"),
+                                icon: "waveform.path.ecg",
+                                fill: Color(red: 0.92, green: 0.95, blue: 0.99),
+                                foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
+                            ) {
+                                config.runDesktopSystemAudioProbe()
+                            }
+                            .disabled(config.systemAudioProbeRunning || !config.systemAudioScreenRecordingGranted)
+
+                            if !config.systemAudioDesktopProbeSummary.isEmpty {
+                                Text(config.systemAudioDesktopProbeSummary)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                                    .frame(width: 360, alignment: .trailing)
+                                    .multilineTextAlignment(.trailing)
+                            }
+                        }
+                    }
+
+                    rowDivider
+                    SettingsRow(label: tr("应用音频探测", "Application Audio Probe"), description: tr("选择一个当前可捕获的应用，再运行 3 秒探测，确认单应用音频模式的回调链路是否可用。", "Pick a currently shareable application and run a 3-second probe to verify the callback path for application-audio mode.")) {
+                        VStack(alignment: .trailing, spacing: 8) {
+                            Picker("", selection: $config.selectedSystemAudioApplicationPID) {
+                                Text(tr("请选择应用", "Select an app")).tag("")
+                                ForEach(config.systemAudioApplications) { app in
+                                    Text("\(app.applicationName) (pid \(app.processID))").tag(String(app.processID))
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                            .frame(width: 320)
+
+                            SoftActionButton(
+                                title: tr("运行应用探测", "Run App Probe"),
+                                icon: "app.connected.to.app.below.fill",
+                                fill: Color(red: 0.92, green: 0.95, blue: 0.99),
+                                foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
+                            ) {
+                                config.runApplicationSystemAudioProbe()
+                            }
+                            .disabled(
+                                config.systemAudioProbeRunning
+                                    || !config.systemAudioScreenRecordingGranted
+                                    || config.selectedSystemAudioApplicationPID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            )
+
+                            if !config.systemAudioApplicationProbeSummary.isEmpty {
+                                Text(config.systemAudioApplicationProbeSummary)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                                    .frame(width: 360, alignment: .trailing)
+                                    .multilineTextAlignment(.trailing)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !config.systemAudioDisplays.isEmpty || !config.systemAudioApplications.isEmpty {
+                SettingsCard(title: tr("系统音频候选对象", "System Audio Candidates"), subtitle: tr("这里展示 helper 当前枚举到的候选显示器与应用，便于选择应用音频目标并排查可捕获范围。", "This shows the helper's current display and application candidates so you can choose an application-audio target and inspect what is actually shareable.")) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if !config.systemAudioDisplays.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(tr("显示器", "Displays"))
+                                    .font(.system(size: 13.5, weight: .semibold))
+                                    .foregroundStyle(Color(red: 0.12, green: 0.16, blue: 0.24))
+
+                                ForEach(config.systemAudioDisplays) { display in
+                                    Text(display.title)
+                                        .font(.system(size: 12.5, weight: .medium))
+                                        .foregroundStyle(Color(red: 0.25, green: 0.28, blue: 0.34))
+                                }
+                            }
+                        }
+
+                        if !config.systemAudioApplications.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(tr("应用", "Applications"))
+                                    .font(.system(size: 13.5, weight: .semibold))
+                                    .foregroundStyle(Color(red: 0.12, green: 0.16, blue: 0.24))
+
+                                ScrollView {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        ForEach(config.systemAudioApplications.prefix(18)) { app in
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(app.applicationName)
+                                                    .font(.system(size: 12.5, weight: .semibold))
+                                                    .foregroundStyle(Color(red: 0.15, green: 0.18, blue: 0.24))
+                                                Text("\(app.bundleIdentifier.isEmpty ? "bundle id unavailable" : app.bundleIdentifier) • pid \(app.processID)")
+                                                    .font(.system(size: 11.5, weight: .medium))
+                                                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                                            }
+                                        }
+                                    }
+                                }
+                                .frame(minHeight: 120, maxHeight: 220)
+                            }
+                        }
+                    }
+                }
+            }
+
             SettingsCard(title: tr("热键测试", "Hotkey Test"), subtitle: tr("监听修饰键变化，确认系统是否能识别你想用的热键。", "Listen for modifier changes and confirm the system sees the hotkey you want to use.")) {
                 VStack(spacing: 0) {
                     SettingsRow(label: tr("监听器", "Listener"), description: tr("开始监听后，按下 Fn 或已配置热键，查看原始事件详情。", "Start monitoring and press Fn or your configured key to see raw event details.")) {
@@ -767,6 +967,7 @@ struct ContentView: View {
         }
         .onAppear {
             config.loadLogs()
+            config.refreshSystemAudioDiagnostics()
         }
     }
 

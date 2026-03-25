@@ -14,6 +14,10 @@ let package = Package(
             swiftSettings: perfDevUIEnabled ? [
                 .define("OPENFLOW_PERF_DEV_UI")
             ] : []
+        ),
+        .executableTarget(
+            name: "OpenFlowSystemAudioHelper",
+            path: "Sources/OpenFlowSystemAudioHelper"
         )
     ]
 )
