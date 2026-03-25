@@ -278,13 +278,20 @@ mod platform {
         }
 
         fn set_visible(&self, visible: bool) {
+            let was_visible = self.visible.swap(visible, Ordering::SeqCst);
+            if was_visible == visible {
+                unsafe {
+                    let _: () = msg_send![self.root_view, setHidden: if visible { NO } else { YES }];
+                }
+                return;
+            }
+
             if visible {
                 self.sync_prompt_view();
             } else {
                 self.save_current_prompt();
             }
 
-            self.visible.store(visible, Ordering::SeqCst);
             unsafe {
                 let _: () = msg_send![self.root_view, setHidden: if visible { NO } else { YES }];
             }
