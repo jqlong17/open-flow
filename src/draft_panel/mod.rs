@@ -19,11 +19,12 @@ mod platform {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::OnceLock;
 
-    const PANEL_WIDTH: f64 = 740.0;
-    const PANEL_HEIGHT: f64 = 1000.0;
+    const PANEL_WIDTH: f64 = 340.0;
+    const PANEL_HEIGHT: f64 = 410.0;
     const NS_BACKING_STORE_BUFFERED: u64 = 2;
     const AUTORESIZE_WIDTH_HEIGHT: u64 = 18;
     const AUTORESIZE_BOTTOM_RIGHT: u64 = 33;
+    const AUTORESIZE_BOTTOM_LEFT: u64 = 36;
     const COMMAND_KEY_MASK: u64 = 1 << 20;
     const NS_SWITCH_BUTTON: i64 = 3;
 
@@ -329,8 +330,8 @@ mod platform {
                 let _: () = msg_send![text_view, setFont: font];
 
                 let clear_button_frame = NSRect::new(
-                    NSPoint::new(content_frame.size.width - 168.0, 8.0),
-                    NSSize::new(72.0, 24.0),
+                    NSPoint::new(content_frame.size.width - 188.0, 8.0),
+                    NSSize::new(80.0, 24.0),
                 );
                 let clear_button: id = msg_send![class!(NSButton), alloc];
                 let clear_button: id = msg_send![clear_button, initWithFrame: clear_button_frame];
@@ -339,8 +340,8 @@ mod platform {
                 let _: () = msg_send![clear_button, setAutoresizingMask: AUTORESIZE_BOTTOM_RIGHT];
 
                 let copy_button_frame = NSRect::new(
-                    NSPoint::new(content_frame.size.width - 88.0, 8.0),
-                    NSSize::new(72.0, 24.0),
+                    NSPoint::new(content_frame.size.width - 100.0, 8.0),
+                    NSSize::new(80.0, 24.0),
                 );
                 let copy_button: id = msg_send![class!(NSButton), alloc];
                 let copy_button: id = msg_send![copy_button, initWithFrame: copy_button_frame];
@@ -357,15 +358,15 @@ mod platform {
                 );
 
                 let toggle_button_frame = NSRect::new(
-                    NSPoint::new(content_frame.size.width - 278.0, 10.0),
-                    NSSize::new(96.0, 20.0),
+                    NSPoint::new(18.0, 9.0),
+                    NSSize::new(120.0, 20.0),
                 );
                 let toggle_button: id = msg_send![class!(NSButton), alloc];
                 let toggle_button: id = msg_send![toggle_button, initWithFrame: toggle_button_frame];
                 let _: () = msg_send![toggle_button, setButtonType: NS_SWITCH_BUTTON];
                 let _: () = msg_send![toggle_button, setTitle: NSString::alloc(nil).init_str(ui_language.draft_panel_enabled())];
                 let _: () = msg_send![toggle_button, setState: if draft_mode_active.load(Ordering::SeqCst) { 1i64 } else { 0i64 }];
-                let _: () = msg_send![toggle_button, setAutoresizingMask: AUTORESIZE_BOTTOM_RIGHT];
+                let _: () = msg_send![toggle_button, setAutoresizingMask: AUTORESIZE_BOTTOM_LEFT];
                 let _: () = msg_send![toggle_button, setToolTip: NSString::alloc(nil).init_str(ui_language.draft_panel_enabled_tooltip())];
                 let _: () = msg_send![toggle_button, setTarget: action_target];
                 let _: () = msg_send![toggle_button, setAction: sel!(toggleDraftMode:)];

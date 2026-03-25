@@ -618,7 +618,7 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     }
 
     use crate::draft_panel::{DraftPanel, DraftPanelEvent};
-    let draft_mode_active = Arc::new(AtomicBool::new(true));
+    let draft_mode_active = Arc::new(AtomicBool::new(false));
     let draft_panel = DraftPanel::new(draft_mode_active.clone()).map(Arc::new);
     let (draft_tx, draft_rx) = std::sync::mpsc::sync_channel::<DraftPanelEvent>(64);
     if draft_panel.is_some() {

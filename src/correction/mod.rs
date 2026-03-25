@@ -167,6 +167,29 @@ fn load_personal_vocabulary() -> Result<Vec<String>> {
     Ok(terms)
 }
 
+fn default_system_prompt_template() -> &'static str {
+    "你是一个语音转写轻量纠错器。你的唯一任务是修正明显的 ASR 识别错误。\n\
+规则：\n\
+1. 只修正明显错误，不要改写句式，不要润色，不要总结，不要解释。\n\
+2. 不要补充用户没说过的事实，不要扩写。\n\
+3. 如果原文已经合理，就原样输出。\n\
+4. 优先参考个人词表中的常用词、品牌词、人名、项目名；当原文发音或拼写接近这些词时，可纠正为词表中的标准写法。\n\
+5. 保留原有语言风格和中英文混排方式。\n\
+6. 最终只输出纠错后的单段文本，不要输出任何说明。\n\
+\n个人词表：\n{{personal_vocabulary}}"
+}
+
+fn load_custom_system_prompt_template() -> Option<String> {
+    let path = Config::correction_system_prompt_path().ok()?;
+    let content = std::fs::read_to_string(path).ok()?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn build_system_prompt(vocabulary: &[String]) -> String {
     let vocab_block = if vocabulary.is_empty() {
         "(无个人词表)".to_string()
@@ -179,18 +202,14 @@ fn build_system_prompt(vocabulary: &[String]) -> String {
             .join("\n")
     };
 
-    format!(
-        "你是一个语音转写轻量纠错器。你的唯一任务是修正明显的 ASR 识别错误。\n\
-规则：\n\
-1. 只修正明显错误，不要改写句式，不要润色，不要总结，不要解释。\n\
-2. 不要补充用户没说过的事实，不要扩写。\n\
-3. 如果原文已经合理，就原样输出。\n\
-4. 优先参考个人词表中的常用词、品牌词、人名、项目名；当原文发音或拼写接近这些词时，可纠正为词表中的标准写法。\n\
-5. 保留原有语言风格和中英文混排方式。\n\
-6. 最终只输出纠错后的单段文本，不要输出任何说明。\n\
-\n个人词表：\n{}",
-        vocab_block
-    )
+    let template = load_custom_system_prompt_template()
+        .unwrap_or_else(|| default_system_prompt_template().to_string());
+
+    if template.contains("{{personal_vocabulary}}") {
+        template.replace("{{personal_vocabulary}}", &vocab_block)
+    } else {
+        format!("{}\n\n个人词表：\n{}", template, vocab_block)
+    }
 }
 
 #[derive(Serialize)]

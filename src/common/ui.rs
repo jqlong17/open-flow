@@ -135,8 +135,15 @@ impl UiLanguage {
 
     pub fn draft_panel_enabled(self) -> &'static str {
         match self {
-            Self::Zh => "开启",
-            Self::En => "Enabled",
+            Self::Zh => "草稿模式",
+            Self::En => "Draft Mode",
+        }
+    }
+
+    pub fn draft_panel_help(self) -> &'static str {
+        match self {
+            Self::Zh => "说明",
+            Self::En => "Info",
         }
     }
 
