@@ -14,6 +14,28 @@ private struct PermissionSnapshot: Decodable {
     }
 }
 
+struct InputDeviceOption: Identifiable, Decodable, Hashable {
+    let name: String
+    let isDefault: Bool
+
+    var id: String { name }
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case isDefault = "is_default"
+    }
+}
+
+private struct InputDeviceSnapshot: Decodable {
+    let defaultDeviceName: String?
+    let devices: [InputDeviceOption]
+
+    enum CodingKeys: String, CodingKey {
+        case defaultDeviceName = "default_device_name"
+        case devices
+    }
+}
+
 /// Manages reading/writing Open Flow's config.toml and daemon lifecycle
 class ConfigManager: ObservableObject {
     // Config fields
@@ -28,9 +50,12 @@ class ConfigManager: ObservableObject {
     @Published var groqLanguage: String = ""
     @Published var hotkey: String = "right_cmd"
     @Published var triggerMode: String = "toggle"
+    @Published var inputSource: String = ""
     @Published var chineseConversion: String = ""
     @Published var performanceLogEnabled: String = ""
     @Published var modelPath: String = ""
+    @Published var availableInputDevices: [InputDeviceOption] = []
+    @Published var detectedDefaultInputDeviceName: String = ""
 
     // Daemon status
     @Published var daemonRunning = false
@@ -84,6 +109,7 @@ class ConfigManager: ObservableObject {
         try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
 
         load()
+        refreshInputDevices()
         refreshStatus()
         refreshPermissions()
 
@@ -277,6 +303,7 @@ class ConfigManager: ObservableObject {
             case "groq_language": groqLanguage = value
             case "hotkey": hotkey = value
             case "trigger_mode": triggerMode = value
+            case "input_source": inputSource = value
             case "chinese_conversion": chineseConversion = value
             case "performance_log_enabled": performanceLogEnabled = value
             case "model_path": modelPath = value
@@ -309,6 +336,7 @@ class ConfigManager: ObservableObject {
             ("groq_language", groqLanguage),
             ("hotkey", hotkey),
             ("trigger_mode", triggerMode),
+            ("input_source", inputSource),
             ("chinese_conversion", chineseConversion),
             ("performance_log_enabled", performanceLogEnabled),
             ("model_path", modelPath),
@@ -459,6 +487,59 @@ class ConfigManager: ObservableObject {
             value = String(value.dropFirst().dropLast())
         }
         return (key, value)
+    }
+
+    // MARK: - Audio Devices
+
+    func refreshInputDevices() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            guard let snapshot = self.fetchInputDeviceSnapshotFromOpenFlow() else { return }
+
+            DispatchQueue.main.async {
+                self.availableInputDevices = snapshot.devices
+                self.detectedDefaultInputDeviceName = snapshot.defaultDeviceName ?? ""
+            }
+        }
+    }
+
+    private func fetchInputDeviceSnapshotFromOpenFlow() -> InputDeviceSnapshot? {
+        guard let binary = findOpenFlowBinary() else { return nil }
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: binary)
+        task.arguments = ["audio-devices", "--json"]
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        task.standardOutput = stdout
+        task.standardError = stderr
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        guard task.terminationStatus == 0 else {
+            return nil
+        }
+
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        guard !data.isEmpty else { return nil }
+        return try? JSONDecoder().decode(InputDeviceSnapshot.self, from: data)
+    }
+
+    var resolvedInputSourceLabel: String {
+        let trimmed = inputSource.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        if !detectedDefaultInputDeviceName.isEmpty {
+            return detectedDefaultInputDeviceName
+        }
+        return usesEnglish ? "System Default" : "系统默认"
     }
 
     // MARK: - Daemon Control

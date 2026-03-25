@@ -1,45 +1,43 @@
 use anyhow::Result;
-use cpal::traits::{DeviceTrait, HostTrait};
 use std::time::Duration;
 
 use crate::audio::AudioCapture;
 
 /// 测试录音功能
 pub async fn test_record(duration_secs: u64) -> Result<()> {
+    let config = crate::common::config::Config::load().unwrap_or_default();
+    let configured_input_source = config.resolved_input_source();
+
     println!("🎙️  测试录音功能");
     println!();
 
     // 显示可用设备
-    let host = cpal::default_host();
     println!("可用的音频输入设备:");
     println!("{}", "=".repeat(50));
-    if let Ok(devices) = host.input_devices() {
-        for (idx, device) in devices.enumerate() {
-            if let Ok(name) = device.name() {
-                let is_default = host
-                    .default_input_device()
-                    .map(|d| d.name().ok() == Some(name.clone()))
-                    .unwrap_or(false);
-                println!("{} [{}] {}", if is_default { "*" } else { " " }, idx, name);
-                if let Ok(cfg) = device.default_input_config() {
-                    println!(
-                        "    采样率: {}Hz, 通道: {}, 格式: {:?}",
-                        cfg.sample_rate().0,
-                        cfg.channels(),
-                        cfg.sample_format()
-                    );
-                }
-            }
+    if let Ok(snapshot) = crate::audio::list_input_devices() {
+        for (idx, device) in snapshot.devices.iter().enumerate() {
+            println!(
+                "{} [{}] {}",
+                if device.is_default { "*" } else { " " },
+                idx,
+                device.name
+            );
         }
     }
     println!("{}", "=".repeat(50));
     println!("* = 默认设备");
+    if let Some(source) = configured_input_source.as_deref() {
+        println!("当前配置输入源: {}", source);
+    } else {
+        println!("当前配置输入源: 系统默认");
+    }
     println!();
 
     // 初始化音频采集器
-    let audio_capture = AudioCapture::new()?;
+    let audio_capture = AudioCapture::new_with_device_name(configured_input_source.as_deref())?;
     let info = audio_capture.get_info();
     println!("使用音频设备配置:");
+    println!("  设备名: {}", info.device_name);
     println!("  采样率: {}Hz", info.sample_rate);
     println!("  通道数: {}", info.channels);
     println!("  格式: {}", info.sample_format);

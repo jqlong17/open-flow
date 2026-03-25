@@ -333,10 +333,7 @@ where
         .unwrap_or_default();
     let (download_url, latest_tag) = fetch_latest_macos_app_asset()?;
     let current_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
-    log_update_info(format!(
-        "当前版本 {}，最新版本 {}",
-        current_tag, latest_tag
-    ));
+    log_update_info(format!("当前版本 {}，最新版本 {}", current_tag, latest_tag));
     if latest_tag == current_tag {
         return Ok(UpdateDownloadResult::UpToDate { latest_tag });
     }
@@ -345,7 +342,10 @@ where
         "{}",
         ui.pick(
             format!("⬇️  检测到新版本 {}，正在下载更新包...", latest_tag),
-            format!("⬇️  New version {} found. Downloading update package...", latest_tag),
+            format!(
+                "⬇️  New version {} found. Downloading update package...",
+                latest_tag
+            ),
         )
     );
     let zip_path = download_latest_app_zip(&download_url, &latest_tag, |downloaded, total| {
@@ -472,7 +472,10 @@ pub fn start_background(model: Option<PathBuf>) -> anyhow::Result<()> {
                     format!("ℹ️  Open Flow is already running (PID: {})", pid),
                 )
             );
-            println!("   {}", ui.pick("停止: open-flow stop", "Stop: open-flow stop"));
+            println!(
+                "   {}",
+                ui.pick("停止: open-flow stop", "Stop: open-flow stop")
+            );
             return Ok(());
         }
         remove_pid_file();
@@ -515,7 +518,10 @@ pub fn start_background(model: Option<PathBuf>) -> anyhow::Result<()> {
         )
     );
     println!("   {} {}", ui.pick("日志:", "Log:"), log.display());
-    println!("   {}", ui.pick("停止: open-flow stop", "Stop: open-flow stop"));
+    println!(
+        "   {}",
+        ui.pick("停止: open-flow stop", "Stop: open-flow stop")
+    );
     Ok(())
 }
 
@@ -535,7 +541,10 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
                     format!("ℹ️  Open Flow is already running (PID: {})", pid),
                 )
             );
-            println!("   {}", ui.pick("停止: open-flow stop", "Stop: open-flow stop"));
+            println!(
+                "   {}",
+                ui.pick("停止: open-flow stop", "Stop: open-flow stop")
+            );
             return Ok(());
         }
         remove_pid_file();
@@ -665,7 +674,13 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
             }
         }
         _ => {
-            println!("   {}", ui.pick("Provider: Local (SenseVoice)", "Provider: Local (SenseVoice)"));
+            println!(
+                "   {}",
+                ui.pick(
+                    "Provider: Local (SenseVoice)",
+                    "Provider: Local (SenseVoice)"
+                )
+            );
             Arc::new(LocalAsrProvider::new(model_path.clone()))
         }
     };
@@ -680,7 +695,11 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
         )
     );
     println!("   {} {}", ui.pick("热键:", "Hotkey:"), config.hotkey);
-    println!("   {} {}", ui.pick("触发模式:", "Trigger Mode:"), config.trigger_mode);
+    println!(
+        "   {} {}",
+        ui.pick("触发模式:", "Trigger Mode:"),
+        config.trigger_mode
+    );
     println!("   {} {}", ui.pick("日志:", "Log:"), log.display());
     println!();
     println!(
@@ -883,7 +902,10 @@ fn run_main_loop(
                         }
                         show_update_popup(
                             ui_language,
-                            ui_language.pick("更新任务中断，请重试。", "The update task was interrupted. Please try again."),
+                            ui_language.pick(
+                                "更新任务中断，请重试。",
+                                "The update task was interrupted. Please try again.",
+                            ),
                         );
                         break;
                     }
@@ -1207,7 +1229,10 @@ pub async fn stop() -> Result<()> {
         remove_pid_file();
         println!(
             "{}",
-            ui.pick("✅ daemon 已停止（强制终止）", "✅ daemon stopped (force killed)")
+            ui.pick(
+                "✅ daemon 已停止（强制终止）",
+                "✅ daemon stopped (force killed)"
+            )
         );
     }
 
@@ -1262,8 +1287,15 @@ pub async fn permissions(json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}", ui.pick("Open Flow 权限状态", "Open Flow Permission Status"));
-    println!("  {} {}", ui.pick("可执行文件:", "Executable:"), snapshot.current_exe);
+    println!(
+        "{}",
+        ui.pick("Open Flow 权限状态", "Open Flow Permission Status")
+    );
+    println!(
+        "  {} {}",
+        ui.pick("可执行文件:", "Executable:"),
+        snapshot.current_exe
+    );
     println!("  Accessibility: {}", snapshot.accessibility);
     println!("  Input Monitoring: {}", snapshot.input_monitoring);
     println!("  Microphone: {}", snapshot.microphone);
@@ -1277,18 +1309,40 @@ pub async fn status() -> Result<()> {
     match read_pid() {
         Some(pid) if is_running(pid) => {
             let uptime = get_uptime_str(pid);
-            println!("{}", ui.pick("Open Flow daemon 状态", "Open Flow daemon status"));
-            println!("  {}     {}", ui.pick("状态:", "Status:"), ui.pick("✅ 运行中", "✅ Running"));
+            println!(
+                "{}",
+                ui.pick("Open Flow daemon 状态", "Open Flow daemon status")
+            );
+            println!(
+                "  {}     {}",
+                ui.pick("状态:", "Status:"),
+                ui.pick("✅ 运行中", "✅ Running")
+            );
             println!("  PID:      {}", pid);
             println!("  {}     {}", ui.pick("运行:", "Uptime:"), uptime);
-            println!("  {}     {:?}", ui.pick("模型:", "Model:"), config.model_path.unwrap_or_default());
+            println!(
+                "  {}     {:?}",
+                ui.pick("模型:", "Model:"),
+                config.model_path.unwrap_or_default()
+            );
             println!("  Provider: {}", config.provider);
             println!("  {}     {}", ui.pick("热键:", "Hotkey:"), config.hotkey);
-            println!("  {} {}", ui.pick("触发模式:", "Trigger Mode:"), config.trigger_mode);
-            println!("  {}     {}", ui.pick("日志:", "Log:"), log_path()?.display());
+            println!(
+                "  {} {}",
+                ui.pick("触发模式:", "Trigger Mode:"),
+                config.trigger_mode
+            );
+            println!(
+                "  {}     {}",
+                ui.pick("日志:", "Log:"),
+                log_path()?.display()
+            );
         }
         Some(pid) => {
-            println!("{}", ui.pick("Open Flow daemon 状态", "Open Flow daemon status"));
+            println!(
+                "{}",
+                ui.pick("Open Flow daemon 状态", "Open Flow daemon status")
+            );
             println!(
                 "  {}   {}",
                 ui.pick("状态:", "Status:"),
@@ -1300,8 +1354,15 @@ pub async fn status() -> Result<()> {
             remove_pid_file();
         }
         None => {
-            println!("{}", ui.pick("Open Flow daemon 状态", "Open Flow daemon status"));
-            println!("  {}   {}", ui.pick("状态:", "Status:"), ui.pick("❌ 未运行", "❌ Not running"));
+            println!(
+                "{}",
+                ui.pick("Open Flow daemon 状态", "Open Flow daemon status")
+            );
+            println!(
+                "  {}   {}",
+                ui.pick("状态:", "Status:"),
+                ui.pick("❌ 未运行", "❌ Not running")
+            );
             println!("  {}   open-flow start", ui.pick("启动:", "Start:"));
         }
     }

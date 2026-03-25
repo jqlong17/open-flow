@@ -94,13 +94,31 @@ mod platform {
             y -= row_height + 8.0;
 
             // Info text
-            Self::add_label(content, ui_language.settings_edit_config_hint(), label_x, y, false);
+            Self::add_label(
+                content,
+                ui_language.settings_edit_config_hint(),
+                label_x,
+                y,
+                false,
+            );
             y -= row_height;
-            Self::add_label(content, ui_language.settings_restart_hint(), label_x, y, false);
+            Self::add_label(
+                content,
+                ui_language.settings_restart_hint(),
+                label_x,
+                y,
+                false,
+            );
             y -= row_height + 16.0;
 
             // Current settings display
-            Self::add_label(content, ui_language.settings_current_config(), label_x, y, true);
+            Self::add_label(
+                content,
+                ui_language.settings_current_config(),
+                label_x,
+                y,
+                true,
+            );
             y -= row_height;
 
             // These will be updated in reload_values, but show placeholders
@@ -163,8 +181,16 @@ mod platform {
                 let labels = [
                     format!("{}: {}", ui_language.settings_provider(), config.provider),
                     format!("{}: {}", ui_language.settings_hotkey(), config.hotkey),
-                    format!("{}: {}", ui_language.settings_trigger(), config.trigger_mode),
-                    format!("{}: {}", ui_language.settings_groq_model(), config.groq_model),
+                    format!(
+                        "{}: {}",
+                        ui_language.settings_trigger(),
+                        config.trigger_mode
+                    ),
+                    format!(
+                        "{}: {}",
+                        ui_language.settings_groq_model(),
+                        config.groq_model
+                    ),
                 ];
                 for (i, text) in labels.iter().enumerate() {
                     let tag = tag_base + i as i64;

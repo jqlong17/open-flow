@@ -16,6 +16,7 @@ pub async fn run(
     info!("开始单次转写");
 
     let model_path = model_store::ensure_model_ready(model_override).await?;
+    let config = crate::common::config::Config::load().unwrap_or_default();
 
     println!("🎙️  语音转写");
     println!();
@@ -28,7 +29,9 @@ pub async fn run(
         println!("📂 使用已有音频文件: {:?}", input_file);
         input_file
     } else {
-        let audio_capture = AudioCapture::new().context("初始化音频采集器失败")?;
+        let audio_capture =
+            AudioCapture::new_with_device_name(config.resolved_input_source().as_deref())
+                .context("初始化音频采集器失败")?;
         let audio_info = audio_capture.get_info();
         println!("音频设备: {}", audio_info.device_name);
         println!(

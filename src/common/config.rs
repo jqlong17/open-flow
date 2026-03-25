@@ -64,6 +64,8 @@ pub struct Config {
     #[serde(default = "default_trigger_mode")]
     pub trigger_mode: String,
     #[serde(default)]
+    pub input_source: String,
+    #[serde(default)]
     pub chinese_conversion: String,
     #[serde(default)]
     pub performance_log_enabled: String,
@@ -113,6 +115,7 @@ impl Default for Config {
             groq_language: String::new(),
             hotkey: default_hotkey(),
             trigger_mode: default_trigger_mode(),
+            input_source: String::new(),
             chinese_conversion: String::new(),
             performance_log_enabled: String::new(),
         }
@@ -142,6 +145,15 @@ impl Config {
             default_correction_model()
         } else {
             model.to_string()
+        }
+    }
+
+    pub fn resolved_input_source(&self) -> Option<String> {
+        let source = self.input_source.trim();
+        if source.is_empty() {
+            None
+        } else {
+            Some(source.to_string())
         }
     }
 

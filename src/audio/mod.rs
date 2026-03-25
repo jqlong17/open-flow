@@ -2,13 +2,14 @@ use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 use hound::{WavSpec, WavWriter};
+use serde::Serialize;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// 音频采集器
 pub struct AudioCapture {
@@ -38,17 +39,37 @@ impl Default for RecordingData {
 impl AudioCapture {
     /// 创建新的音频采集器
     pub fn new() -> Result<Self> {
+        Self::new_with_device_name(None)
+    }
+
+    /// 使用指定输入设备名称创建新的音频采集器；空值时回落到系统默认设备。
+    pub fn new_with_device_name(device_name: Option<&str>) -> Result<Self> {
         info!("正在初始化音频采集器...");
 
         let host = cpal::default_host();
+        let requested_device_name = device_name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string);
+        let device = select_input_device(&host, requested_device_name.as_deref())?;
+        let actual_device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
 
-        let device = host
-            .default_input_device()
-            .context("未找到输入设备，请检查麦克风是否连接并已在系统设置中启用")?;
-
-        let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
-        info!("使用系统默认输入设备: {}", device_name);
-        info!("使用音频设备: {}", device_name);
+        match requested_device_name.as_deref() {
+            Some(requested) if requested == actual_device_name => {
+                info!("使用指定输入设备: {}", actual_device_name);
+            }
+            Some(requested) => {
+                warn!(
+                    "指定输入设备未命中，回退到可用设备 requested={} actual={}",
+                    requested, actual_device_name
+                );
+                info!("使用回退输入设备: {}", actual_device_name);
+            }
+            None => {
+                info!("使用系统默认输入设备: {}", actual_device_name);
+            }
+        }
+        info!("使用音频设备: {}", actual_device_name);
 
         // 获取默认配置
         let supported_config = device
@@ -69,7 +90,7 @@ impl AudioCapture {
 
         Ok(Self {
             device,
-            device_name,
+            device_name: actual_device_name,
             config,
             sample_format,
             sample_rate,
@@ -332,6 +353,54 @@ impl AudioCapture {
     }
 }
 
+pub fn list_input_devices() -> Result<AudioDeviceSnapshot> {
+    let host = cpal::default_host();
+    let default_device_name = host
+        .default_input_device()
+        .and_then(|device| device.name().ok());
+    let mut devices = Vec::new();
+
+    let input_devices = host
+        .input_devices()
+        .context("无法枚举输入设备，请检查麦克风权限和音频设备状态")?;
+
+    for device in input_devices {
+        let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+        let is_default = default_device_name
+            .as_ref()
+            .map(|default_name| default_name == &name)
+            .unwrap_or(false);
+        devices.push(AudioDeviceEntry { name, is_default });
+    }
+
+    Ok(AudioDeviceSnapshot {
+        default_device_name,
+        devices,
+    })
+}
+
+fn select_input_device(host: &cpal::Host, preferred_name: Option<&str>) -> Result<cpal::Device> {
+    if let Some(target_name) = preferred_name {
+        let devices = host
+            .input_devices()
+            .context("无法枚举输入设备，请检查麦克风权限和音频设备状态")?;
+        for device in devices {
+            if device.name().ok().as_deref() == Some(target_name) {
+                return Ok(device);
+            }
+        }
+    }
+
+    if let Some(device) = host.default_input_device() {
+        return Ok(device);
+    }
+
+    host.input_devices()
+        .context("无法枚举输入设备，请检查麦克风权限和音频设备状态")?
+        .next()
+        .context("未找到输入设备，请检查麦克风是否连接并已在系统设置中启用")
+}
+
 /// 音频信息
 #[derive(Debug, Clone)]
 pub struct AudioInfo {
@@ -339,4 +408,16 @@ pub struct AudioInfo {
     pub sample_rate: u32,
     pub channels: u16,
     pub sample_format: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AudioDeviceEntry {
+    pub name: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AudioDeviceSnapshot {
+    pub default_device_name: Option<String>,
+    pub devices: Vec<AudioDeviceEntry>,
 }

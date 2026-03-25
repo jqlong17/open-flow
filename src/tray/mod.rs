@@ -97,8 +97,7 @@ mod platform {
             let update = MenuItem::with_id("update", ui_language.tray_update(), true, None);
             let draft = MenuItem::with_id("draft", ui_language.tray_draft(), true, None);
             let status_item = MenuItem::with_id("status", ui_language.status_idle(), false, None);
-            let prefs =
-                MenuItem::with_id("prefs", ui_language.tray_preferences(), true, None);
+            let prefs = MenuItem::with_id("prefs", ui_language.tray_preferences(), true, None);
             let exit = MenuItem::with_id("exit", ui_language.tray_exit(), true, None);
 
             let menu = Menu::with_items(&[&title, &update, &draft, &status_item, &prefs, &exit])

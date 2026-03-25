@@ -127,10 +127,8 @@ impl LlmClient {
                 anyhow::bail!("BigModel 调用失败: {} {}", status, body);
             }
 
-            let parsed: BigModelChatResponse = response
-                .json()
-                .await
-                .context("解析 BigModel 响应失败")?;
+            let parsed: BigModelChatResponse =
+                response.json().await.context("解析 BigModel 响应失败")?;
 
             return Ok(parsed
                 .choices

@@ -264,7 +264,8 @@ mod platform {
 
         fn set_generate_button_title(&self, title: &str) {
             unsafe {
-                let _: () = msg_send![self.generate_button, setTitle: NSString::alloc(nil).init_str(title)];
+                let _: () =
+                    msg_send![self.generate_button, setTitle: NSString::alloc(nil).init_str(title)];
             }
         }
 
@@ -281,7 +282,8 @@ mod platform {
             let was_visible = self.visible.swap(visible, Ordering::SeqCst);
             if was_visible == visible {
                 unsafe {
-                    let _: () = msg_send![self.root_view, setHidden: if visible { NO } else { YES }];
+                    let _: () =
+                        msg_send![self.root_view, setHidden: if visible { NO } else { YES }];
                 }
                 return;
             }
@@ -311,7 +313,8 @@ mod platform {
                 let header_height = 28.0f64;
                 let controls_height = 28.0f64;
                 let content_width = (width - padding * 2.0).max(240.0);
-                let available_body = (height - padding * 3.0 - header_height - controls_height - 24.0).max(240.0);
+                let available_body =
+                    (height - padding * 3.0 - header_height - controls_height - 24.0).max(240.0);
                 let prompt_height = (available_body * 0.42).clamp(110.0, 190.0);
                 let header_y = height - padding - header_height;
                 let prompt_y = header_y - 10.0 - prompt_height;
@@ -502,7 +505,10 @@ mod platform {
                                     Ok(text) => {
                                         let content = if text.trim().is_empty() {
                                             self.ui
-                                                .pick("模型返回了空结果。", "The model returned an empty result.")
+                                                .pick(
+                                                    "模型返回了空结果。",
+                                                    "The model returned an empty result.",
+                                                )
                                                 .to_string()
                                         } else {
                                             text

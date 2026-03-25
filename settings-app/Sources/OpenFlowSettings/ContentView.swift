@@ -87,6 +87,7 @@ struct ContentView: View {
         }
         .onAppear {
             config.checkModelReady()
+            config.refreshInputDevices()
         }
         .onChange(of: config.provider) { newValue in
             if newValue == "local" {
@@ -281,6 +282,40 @@ struct ContentView: View {
                         }
                         .pickerStyle(.segmented)
                         .frame(width: 320)
+                    }
+
+                    rowDivider
+                    SettingsRow(label: tr("输入源", "Input Source"), description: tr("明确指定录音使用的输入设备。留在“系统默认”时会跟随 macOS 当前默认输入设备；如果你在会议或系统内录场景里使用虚拟声卡，也可以在这里固定选中。", "Choose the exact audio input device Open Flow should record from. Leave it on System Default to follow macOS, or pin a virtual device here for meeting/system-audio workflows.")) {
+                        VStack(alignment: .trailing, spacing: 8) {
+                            Picker("", selection: $config.inputSource) {
+                                Text(tr("系统默认", "System Default")).tag("")
+                                ForEach(config.availableInputDevices) { device in
+                                    Text(device.name).tag(device.name)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                            .frame(width: 260)
+
+                            HStack(spacing: 8) {
+                                StatusPill(
+                                    text: config.inputSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                        ? tr("跟随系统默认", "Following system default")
+                                        : tr("固定设备", "Pinned device"),
+                                    tone: .info
+                                )
+
+                                subtleAction(title: tr("刷新设备", "Refresh Devices"), icon: "arrow.clockwise") {
+                                    config.refreshInputDevices()
+                                }
+                            }
+
+                            Text("\(tr("当前生效", "Effective")): \(config.resolvedInputSourceLabel)")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                                .frame(width: 320, alignment: .trailing)
+                                .multilineTextAlignment(.trailing)
+                        }
                     }
                 }
             }

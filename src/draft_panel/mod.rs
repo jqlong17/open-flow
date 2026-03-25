@@ -531,7 +531,8 @@ mod platform {
                     msg_send![transform_button, initWithFrame: transform_button_frame];
                 let _: () = msg_send![transform_button, setTitle: NSString::alloc(nil).init_str(ui_language.pick("AI转换", "AI"))];
                 let _: () = msg_send![transform_button, setBezelStyle: 1i64];
-                let _: () = msg_send![transform_button, setAutoresizingMask: AUTORESIZE_BOTTOM_RIGHT];
+                let _: () =
+                    msg_send![transform_button, setAutoresizingMask: AUTORESIZE_BOTTOM_RIGHT];
 
                 let target_class = action_target_class();
                 let action_target: id = msg_send![target_class, new];
@@ -559,12 +560,11 @@ mod platform {
                 (&mut *action_target).set_ivar("clearButton", nil);
                 (&mut *action_target).set_ivar("copyButton", nil);
 
-                let toggle_button_frame = NSRect::new(
-                    NSPoint::new(18.0, 9.0),
-                    NSSize::new(92.0, 20.0),
-                );
+                let toggle_button_frame =
+                    NSRect::new(NSPoint::new(18.0, 9.0), NSSize::new(92.0, 20.0));
                 let toggle_button: id = msg_send![class!(NSButton), alloc];
-                let toggle_button: id = msg_send![toggle_button, initWithFrame: toggle_button_frame];
+                let toggle_button: id =
+                    msg_send![toggle_button, initWithFrame: toggle_button_frame];
                 let _: () = msg_send![toggle_button, setButtonType: NS_SWITCH_BUTTON];
                 let _: () = msg_send![toggle_button, setTitle: NSString::alloc(nil).init_str(ui_language.draft_panel_enabled())];
                 let _: () = msg_send![toggle_button, setState: if draft_mode_active.load(Ordering::SeqCst) { 1i64 } else { 0i64 }];
@@ -709,7 +709,8 @@ mod platform {
         pub fn set_draft_mode_enabled(&self, enabled: bool) {
             self.draft_mode_active.store(enabled, Ordering::SeqCst);
             unsafe {
-                let _: () = msg_send![self.toggle_button, setState: if enabled { 1i64 } else { 0i64 }];
+                let _: () =
+                    msg_send![self.toggle_button, setState: if enabled { 1i64 } else { 0i64 }];
             }
         }
 
@@ -739,7 +740,9 @@ mod platform {
     pub struct DraftPanel;
 
     impl DraftPanel {
-        pub fn new(_draft_mode_active: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Option<Self> {
+        pub fn new(
+            _draft_mode_active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        ) -> Option<Self> {
             Some(Self)
         }
 

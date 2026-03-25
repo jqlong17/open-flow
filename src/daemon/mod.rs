@@ -112,9 +112,11 @@ impl Daemon {
         draft_mode_active: Arc<AtomicBool>,
         draft_event_tx: Option<std::sync::mpsc::SyncSender<DraftPanelEvent>>,
     ) -> Result<Self> {
-        let audio_capture = AudioCapture::new().context("初始化音频采集器失败")?;
-        let text_injector = TextInjector::new();
         let config = crate::common::config::Config::load().unwrap_or_default();
+        let audio_capture =
+            AudioCapture::new_with_device_name(config.resolved_input_source().as_deref())
+                .context("初始化音频采集器失败")?;
+        let text_injector = TextInjector::new();
         let text_corrector = TextCorrector::from_config(&config);
         let correction_config_enabled = config.correction_enabled();
         let correction_api_key_configured = !config.resolved_correction_api_key().trim().is_empty();
@@ -124,8 +126,11 @@ impl Daemon {
         let performance_log_enabled = performance_logger.enabled();
 
         println!(
-            "[Pipeline] startup provider={} correction_config_enabled={} correction_runtime_enabled={} correction_api_key_configured={} correction_model={} vocabulary_terms={} performance_log_enabled={}",
+            "[Pipeline] startup provider={} input_source={} correction_config_enabled={} correction_runtime_enabled={} correction_api_key_configured={} correction_model={} vocabulary_terms={} performance_log_enabled={}",
             provider.name(),
+            config
+                .resolved_input_source()
+                .unwrap_or_else(|| "system_default".to_string()),
             correction_config_enabled,
             text_corrector.is_some(),
             correction_api_key_configured,
@@ -191,7 +196,11 @@ impl Daemon {
         );
         let microphone_ok = crate::hotkey::check_microphone_permission();
         println!("{}", ui.pick("🔎 权限诊断", "🔎 Permission Diagnostics"));
-        println!("   {} {}", ui.pick("可执行文件:", "Executable:"), current_exe);
+        println!(
+            "   {} {}",
+            ui.pick("可执行文件:", "Executable:"),
+            current_exe
+        );
         println!("   Accessibility: {}", accessibility_ok);
         println!("   Input Monitoring: {}", input_monitoring_ok);
         println!("   Microphone: {}", microphone_ok);
@@ -199,17 +208,35 @@ impl Daemon {
         // 请求缺失的权限（触发系统对话框）
         if !accessibility_ok {
             println!();
-            println!("{}", ui.pick("⚠️  Accessibility 权限未授权——正在请求...", "⚠️  Accessibility permission not granted. Requesting now..."));
+            println!(
+                "{}",
+                ui.pick(
+                    "⚠️  Accessibility 权限未授权——正在请求...",
+                    "⚠️  Accessibility permission not granted. Requesting now..."
+                )
+            );
             request_accessibility_permission();
         }
         if !input_monitoring_ok {
             println!();
-            println!("{}", ui.pick("⚠️  Input Monitoring 权限未授权——正在请求...", "⚠️  Input Monitoring permission not granted. Requesting now..."));
+            println!(
+                "{}",
+                ui.pick(
+                    "⚠️  Input Monitoring 权限未授权——正在请求...",
+                    "⚠️  Input Monitoring permission not granted. Requesting now..."
+                )
+            );
             crate::hotkey::request_input_monitoring_permission();
         }
         if !microphone_ok {
             println!();
-            println!("{}", ui.pick("⚠️  麦克风权限尚未授权。", "⚠️  Microphone permission is not granted yet."));
+            println!(
+                "{}",
+                ui.pick(
+                    "⚠️  麦克风权限尚未授权。",
+                    "⚠️  Microphone permission is not granted yet."
+                )
+            );
             crate::hotkey::request_microphone_permission();
         }
 
@@ -264,13 +291,26 @@ impl Daemon {
 
         // ── 就绪提示 ──────────────────────────────────────────────────
         println!();
-        println!("{}", ui.pick("✅ Open Flow 已就绪", "✅ Open Flow is ready"));
-        println!("   {} {}", ui.pick("输入设备:", "Input Device:"), audio_info.device_name);
+        println!(
+            "{}",
+            ui.pick("✅ Open Flow 已就绪", "✅ Open Flow is ready")
+        );
+        println!(
+            "   {} {}",
+            ui.pick("输入设备:", "Input Device:"),
+            audio_info.device_name
+        );
         println!(
             "{}",
             ui.pick(
-                format!("   音频设备: {}Hz / {} 通道", audio_info.sample_rate, audio_info.channels),
-                format!("   Audio: {}Hz / {} channels", audio_info.sample_rate, audio_info.channels),
+                format!(
+                    "   音频设备: {}Hz / {} 通道",
+                    audio_info.sample_rate, audio_info.channels
+                ),
+                format!(
+                    "   Audio: {}Hz / {} channels",
+                    audio_info.sample_rate, audio_info.channels
+                ),
             )
         );
         println!("   Provider: {}", self.provider.name());
@@ -696,42 +736,42 @@ impl Daemon {
         if buffer.is_empty() {
             self.is_processing.store(false, Ordering::SeqCst);
             self.emit_performance_log(PerformanceLogEntry {
-                    schema_version: PERF_SCHEMA_VERSION,
-                    app_version: env!("CARGO_PKG_VERSION").to_string(),
-                    created_at_ms: now_unix_ms(),
-                    session_id: perf_session.map(|s| s.session_id).unwrap_or(0),
-                    status: "empty_buffer".to_string(),
-                    provider: self.provider.name().to_string(),
-                    trigger_mode: self.trigger_mode.clone(),
-                    hotkey: self.hotkey.clone(),
-                    segmented: false,
-                    segment_count: 0,
-                    sample_rate: self.audio_capture.get_info().sample_rate,
-                    sample_count: 0,
-                    recording_duration_ms: duration.as_millis() as u64,
-                    asr_duration_ms: 0,
-                    llm_duration_ms: 0,
-                    total_pipeline_ms: 0,
-                    output_duration_ms: 0,
-                    total_e2e_ms: perf_session
-                        .map(|s| now_unix_ms().saturating_sub(s.started_at_ms))
-                        .unwrap_or(0),
-                    llm_attempted: false,
-                    llm_changed: false,
-                    llm_status: "skipped".to_string(),
-                    text_chars: 0,
-                    confidence: 0.0,
-                    language: None,
-                    max_amplitude: 0.0,
-                    rms: 0.0,
-                    error: Some("recording buffer was empty".to_string()),
-                    resource_at_record_start: perf_session
-                        .map(|s| s.resource_at_record_start)
-                        .unwrap_or_else(empty_resource_snapshot),
-                    resource_after_record_stop,
-                    resource_after_asr: empty_resource_snapshot(),
-                    resource_after_pipeline: empty_resource_snapshot(),
-                });
+                schema_version: PERF_SCHEMA_VERSION,
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                created_at_ms: now_unix_ms(),
+                session_id: perf_session.map(|s| s.session_id).unwrap_or(0),
+                status: "empty_buffer".to_string(),
+                provider: self.provider.name().to_string(),
+                trigger_mode: self.trigger_mode.clone(),
+                hotkey: self.hotkey.clone(),
+                segmented: false,
+                segment_count: 0,
+                sample_rate: self.audio_capture.get_info().sample_rate,
+                sample_count: 0,
+                recording_duration_ms: duration.as_millis() as u64,
+                asr_duration_ms: 0,
+                llm_duration_ms: 0,
+                total_pipeline_ms: 0,
+                output_duration_ms: 0,
+                total_e2e_ms: perf_session
+                    .map(|s| now_unix_ms().saturating_sub(s.started_at_ms))
+                    .unwrap_or(0),
+                llm_attempted: false,
+                llm_changed: false,
+                llm_status: "skipped".to_string(),
+                text_chars: 0,
+                confidence: 0.0,
+                language: None,
+                max_amplitude: 0.0,
+                rms: 0.0,
+                error: Some("recording buffer was empty".to_string()),
+                resource_at_record_start: perf_session
+                    .map(|s| s.resource_at_record_start)
+                    .unwrap_or_else(empty_resource_snapshot),
+                resource_after_record_stop,
+                resource_after_asr: empty_resource_snapshot(),
+                resource_after_pipeline: empty_resource_snapshot(),
+            });
             eprintln!(
                 "{}",
                 ui.pick(
@@ -751,42 +791,42 @@ impl Daemon {
         if max_amp < 0.001 {
             self.is_processing.store(false, Ordering::SeqCst);
             self.emit_performance_log(PerformanceLogEntry {
-                    schema_version: PERF_SCHEMA_VERSION,
-                    app_version: env!("CARGO_PKG_VERSION").to_string(),
-                    created_at_ms: now_unix_ms(),
-                    session_id: perf_session.map(|s| s.session_id).unwrap_or(0),
-                    status: "low_amplitude".to_string(),
-                    provider: self.provider.name().to_string(),
-                    trigger_mode: self.trigger_mode.clone(),
-                    hotkey: self.hotkey.clone(),
-                    segmented: false,
-                    segment_count: 0,
-                    sample_rate,
-                    sample_count: buffer.len(),
-                    recording_duration_ms: duration.as_millis() as u64,
-                    asr_duration_ms: 0,
-                    llm_duration_ms: 0,
-                    total_pipeline_ms: 0,
-                    output_duration_ms: 0,
-                    total_e2e_ms: perf_session
-                        .map(|s| now_unix_ms().saturating_sub(s.started_at_ms))
-                        .unwrap_or(0),
-                    llm_attempted: false,
-                    llm_changed: false,
-                    llm_status: "skipped".to_string(),
-                    text_chars: 0,
-                    confidence: 0.0,
-                    language: None,
-                    max_amplitude: max_amp,
-                    rms,
-                    error: Some(format!("audio amplitude too low: max_amp={max_amp:.6}")),
-                    resource_at_record_start: perf_session
-                        .map(|s| s.resource_at_record_start)
-                        .unwrap_or_else(empty_resource_snapshot),
-                    resource_after_record_stop,
-                    resource_after_asr: empty_resource_snapshot(),
-                    resource_after_pipeline: empty_resource_snapshot(),
-                });
+                schema_version: PERF_SCHEMA_VERSION,
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                created_at_ms: now_unix_ms(),
+                session_id: perf_session.map(|s| s.session_id).unwrap_or(0),
+                status: "low_amplitude".to_string(),
+                provider: self.provider.name().to_string(),
+                trigger_mode: self.trigger_mode.clone(),
+                hotkey: self.hotkey.clone(),
+                segmented: false,
+                segment_count: 0,
+                sample_rate,
+                sample_count: buffer.len(),
+                recording_duration_ms: duration.as_millis() as u64,
+                asr_duration_ms: 0,
+                llm_duration_ms: 0,
+                total_pipeline_ms: 0,
+                output_duration_ms: 0,
+                total_e2e_ms: perf_session
+                    .map(|s| now_unix_ms().saturating_sub(s.started_at_ms))
+                    .unwrap_or(0),
+                llm_attempted: false,
+                llm_changed: false,
+                llm_status: "skipped".to_string(),
+                text_chars: 0,
+                confidence: 0.0,
+                language: None,
+                max_amplitude: max_amp,
+                rms,
+                error: Some(format!("audio amplitude too low: max_amp={max_amp:.6}")),
+                resource_at_record_start: perf_session
+                    .map(|s| s.resource_at_record_start)
+                    .unwrap_or_else(empty_resource_snapshot),
+                resource_after_record_stop,
+                resource_after_asr: empty_resource_snapshot(),
+                resource_after_pipeline: empty_resource_snapshot(),
+            });
             eprintln!(
                 "{}",
                 ui.pick(
@@ -803,7 +843,10 @@ impl Daemon {
             );
             eprintln!(
                 "{}",
-                ui.pick("   然后完全退出并重新打开 Open Flow。", "   Then fully quit and reopen Open Flow.")
+                ui.pick(
+                    "   然后完全退出并重新打开 Open Flow。",
+                    "   Then fully quit and reopen Open Flow."
+                )
             );
             return Ok(());
         }
@@ -905,8 +948,8 @@ impl Daemon {
                 text: correction.text,
                 perf_entry,
             }))
-                .await
-                .ok();
+            .await
+            .ok();
             return Ok(());
         }
 
@@ -919,36 +962,36 @@ impl Daemon {
                 self.is_processing.store(false, Ordering::SeqCst);
                 let error_string = e.to_string();
                 if let Some(entry) = self.build_performance_entry(
-                        perf_session,
-                        "asr_failed",
-                        duration.as_millis() as u64,
-                        sample_rate,
-                        buffer.len(),
-                        max_amp,
-                        rms,
-                        &AsrExecutionSummary {
-                            result: TranscriptionResult {
-                                text: String::new(),
-                                confidence: 0.0,
-                                language: None,
-                                duration_ms: transcribe_started_at.elapsed().as_millis() as u64,
-                            },
-                            segmented: false,
-                            segment_count: 0,
-                        },
-                        &CorrectionOutcome {
+                    perf_session,
+                    "asr_failed",
+                    duration.as_millis() as u64,
+                    sample_rate,
+                    buffer.len(),
+                    max_amp,
+                    rms,
+                    &AsrExecutionSummary {
+                        result: TranscriptionResult {
                             text: String::new(),
-                            attempted: false,
-                            changed: false,
-                            duration_ms: 0,
-                            status: "skipped",
+                            confidence: 0.0,
+                            language: None,
+                            duration_ms: transcribe_started_at.elapsed().as_millis() as u64,
                         },
-                        resource_after_record_stop,
-                        self.sample_resource_snapshot(),
-                        self.sample_resource_snapshot(),
-                        0,
-                        Some(error_string),
-                    ) {
+                        segmented: false,
+                        segment_count: 0,
+                    },
+                    &CorrectionOutcome {
+                        text: String::new(),
+                        attempted: false,
+                        changed: false,
+                        duration_ms: 0,
+                        status: "skipped",
+                    },
+                    resource_after_record_stop,
+                    self.sample_resource_snapshot(),
+                    self.sample_resource_snapshot(),
+                    0,
+                    Some(error_string),
+                ) {
                     self.emit_performance_log(entry);
                 }
                 return Err(e);
@@ -1006,8 +1049,8 @@ impl Daemon {
             text: correction.text,
             perf_entry,
         }))
-            .await
-            .ok();
+        .await
+        .ok();
 
         Ok(())
     }
@@ -1288,7 +1331,10 @@ impl Daemon {
             recording_duration_ms,
             asr_duration_ms: asr_summary.result.duration_ms,
             llm_duration_ms: correction.duration_ms,
-            total_pipeline_ms: asr_summary.result.duration_ms.saturating_add(correction.duration_ms),
+            total_pipeline_ms: asr_summary
+                .result
+                .duration_ms
+                .saturating_add(correction.duration_ms),
             output_duration_ms: 0,
             total_e2e_ms: now_ms.saturating_sub(started_at_ms),
             llm_attempted: correction.attempted,

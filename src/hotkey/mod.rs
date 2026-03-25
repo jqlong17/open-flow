@@ -411,7 +411,10 @@ pub fn request_accessibility_permission() {
     );
     println!(
         "{}",
-        ui.pick("⚠️  需要 Accessibility 权限", "⚠️  Accessibility permission required")
+        ui.pick(
+            "⚠️  需要 Accessibility 权限",
+            "⚠️  Accessibility permission required"
+        )
     );
     println!(
         "{}",
@@ -455,7 +458,10 @@ pub fn request_input_monitoring_permission() {
     );
     println!(
         "{}",
-        ui.pick("⚠️  需要“输入监控”权限", "⚠️  Input Monitoring permission required")
+        ui.pick(
+            "⚠️  需要“输入监控”权限",
+            "⚠️  Input Monitoring permission required"
+        )
     );
     println!(
         "{}",
