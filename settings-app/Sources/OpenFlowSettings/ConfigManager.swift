@@ -17,9 +17,10 @@ private struct PermissionSnapshot: Decodable {
 /// Manages reading/writing Open Flow's config.toml and daemon lifecycle
 class ConfigManager: ObservableObject {
     // Config fields
+    @Published var uiLanguage: String = "zh"
     @Published var provider: String = "local"
     @Published var correctionEnabled: String = ""
-    @Published var correctionModel: String = "GLM-4-Flash-250414"
+    @Published var correctionModel: String = "GLM-4.7-Flash"
     @Published var correctionApiKey: String = ""
     @Published var modelPreset: String = "quantized"
     @Published var groqApiKey: String = ""
@@ -56,24 +57,19 @@ class ConfigManager: ObservableObject {
     // Log
     @Published var logContent: String = ""
     @Published var personalVocabulary: String = ""
+    @Published var correctionSystemPrompt: String = ""
 
     static let groqModels = ["whisper-large-v3-turbo", "whisper-large-v3"]
     static let localModelPresets = ["quantized", "fp16"]
-    static let localModelPresetLabels = [
-        "quantized": "Quantized (default, smaller)",
-        "fp16": "FP16 (higher accuracy)"
+    static let correctionModels = [
+        "GLM-4.7-Flash",
+        "GLM-4.6V-Flash",
+        "GLM-4.1V-Thinking-Flash",
+        "GLM-4-Flash-250414",
+        "GLM-4V-Flash"
     ]
     static let hotkeys = ["right_cmd", "right_option", "right_control", "right_shift", "fn", "f13"]
-    static let hotkeyLabels = [
-        "Right Command (⌘)",
-        "Right Option (⌥)",
-        "Right Control (⌃)",
-        "Right Shift (⇧)",
-        "Fn",
-        "F13"
-    ]
     static let triggerModes = ["toggle", "hold"]
-    static let triggerLabels = ["Toggle (press start, press stop)", "Hold (hold to record)"]
 
     private var configPath: URL
     private var dataDir: URL
@@ -209,7 +205,9 @@ class ConfigManager: ObservableObject {
         }
 
         DispatchQueue.main.async {
-            self.lastError = "Failed to open System Settings automatically. Please open Privacy & Security manually."
+            self.lastError = self.usesEnglish
+                ? "Failed to open System Settings automatically. Please open Privacy & Security manually."
+                : "无法自动打开系统设置，请手动前往“隐私与安全性”。"
         }
     }
 
@@ -268,9 +266,10 @@ class ConfigManager: ObservableObject {
             guard let (key, value) = parseTOMLLine(trimmed) else { continue }
 
             switch key {
+            case "ui_language": uiLanguage = value.isEmpty ? "zh" : value
             case "provider": provider = value
             case "correction_enabled": correctionEnabled = value
-            case "correction_model": correctionModel = value.isEmpty ? "GLM-4-Flash-250414" : value
+            case "correction_model": correctionModel = value.isEmpty ? "GLM-4.7-Flash" : value
             case "correction_api_key": correctionApiKey = value
             case "model_preset": modelPreset = value.isEmpty ? "quantized" : value
             case "groq_api_key": groqApiKey = value
@@ -287,6 +286,7 @@ class ConfigManager: ObservableObject {
 
         checkModelReady()
         loadPersonalVocabulary()
+        loadCorrectionSystemPrompt()
     }
 
     func save() {
@@ -298,6 +298,7 @@ class ConfigManager: ObservableObject {
         }
 
         let ourValues: [(String, String)] = [
+            ("ui_language", normalizedUiLanguage),
             ("provider", provider),
             ("correction_enabled", correctionEnabled),
             ("correction_model", normalizedCorrectionModel),
@@ -341,14 +342,25 @@ class ConfigManager: ObservableObject {
             try output.write(to: configPath, atomically: true, encoding: .utf8)
         } catch {
             DispatchQueue.main.async {
-                self.lastError = "Failed to save config: \(error.localizedDescription)"
+                self.lastError = self.usesEnglish
+                    ? "Failed to save config: \(error.localizedDescription)"
+                    : "保存配置失败：\(error.localizedDescription)"
             }
         }
     }
 
     var normalizedCorrectionModel: String {
         let trimmed = correctionModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "glm-4.7-flash" : trimmed
+        return trimmed.isEmpty ? "GLM-4.7-Flash" : trimmed
+    }
+
+    var normalizedUiLanguage: String {
+        let trimmed = uiLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed.hasPrefix("en") ? "en" : "zh"
+    }
+
+    var usesEnglish: Bool {
+        normalizedUiLanguage == "en"
     }
 
     var correctionIsEnabled: Bool {
@@ -386,7 +398,53 @@ class ConfigManager: ObservableObject {
             try personalVocabulary.write(to: personalVocabularyFileURL, atomically: true, encoding: .utf8)
         } catch {
             DispatchQueue.main.async {
-                self.lastError = "Failed to save personal vocabulary: \(error.localizedDescription)"
+                self.lastError = self.usesEnglish
+                    ? "Failed to save personal vocabulary: \(error.localizedDescription)"
+                    : "保存个人词表失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    var correctionSystemPromptFileURL: URL {
+        dataDir.appendingPathComponent("correction_system_prompt.txt")
+    }
+
+    var defaultCorrectionSystemPrompt: String {
+        """
+        你是一个语音转写轻量纠错器。你的唯一任务是修正明显的 ASR 识别错误。
+        规则：
+        1. 只修正明显错误，不要改写句式，不要润色，不要总结，不要解释。
+        2. 不要补充用户没说过的事实，不要扩写。
+        3. 如果原文已经合理，就原样输出。
+        4. 优先参考个人词表中的常用词、品牌词、人名、项目名；当原文发音或拼写接近这些词时，可纠正为词表中的标准写法。
+        5. 保留原有语言风格和中英文混排方式。
+        6. 最终只输出纠错后的单段文本，不要输出任何说明。
+
+        个人词表：
+        {{personal_vocabulary}}
+        """
+    }
+
+    func loadCorrectionSystemPrompt() {
+        guard let content = try? String(contentsOf: correctionSystemPromptFileURL, encoding: .utf8) else {
+            correctionSystemPrompt = defaultCorrectionSystemPrompt
+            return
+        }
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        correctionSystemPrompt = trimmed.isEmpty ? defaultCorrectionSystemPrompt : content
+    }
+
+    func saveCorrectionSystemPrompt() {
+        let content = correctionSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? defaultCorrectionSystemPrompt
+            : correctionSystemPrompt
+        do {
+            try content.write(to: correctionSystemPromptFileURL, atomically: true, encoding: .utf8)
+        } catch {
+            DispatchQueue.main.async {
+                self.lastError = self.usesEnglish
+                    ? "Failed to save correction prompt: \(error.localizedDescription)"
+                    : "保存纠错提示词失败：\(error.localizedDescription)"
             }
         }
     }
@@ -501,7 +559,9 @@ class ConfigManager: ObservableObject {
                     task.waitUntilExit()
                 } catch {
                     DispatchQueue.main.async {
-                        self?.lastError = "Failed to launch app: \(error.localizedDescription)"
+                        self?.lastError = self?.usesEnglish == true
+                            ? "Failed to launch app: \(error.localizedDescription)"
+                            : "启动应用失败：\(error.localizedDescription)"
                     }
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
@@ -513,7 +573,9 @@ class ConfigManager: ObservableObject {
 
         // Strategy 2: Use open-flow CLI binary (background mode)
         guard let binary = findOpenFlowBinary() else {
-            lastError = "Cannot find open-flow binary or .app bundle. Searched: \(searchedPaths())"
+            lastError = usesEnglish
+                ? "Cannot find open-flow binary or .app bundle. Searched: \(searchedPaths())"
+                : "找不到 open-flow 可执行文件或 .app 包。已搜索：\(searchedPaths())"
             return
         }
 
@@ -530,12 +592,16 @@ class ConfigManager: ObservableObject {
                 let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
                 if task.terminationStatus != 0 {
                     DispatchQueue.main.async {
-                        self?.lastError = "Start failed (exit \(task.terminationStatus)): \(output)"
+                        self?.lastError = self?.usesEnglish == true
+                            ? "Start failed (exit \(task.terminationStatus)): \(output)"
+                            : "启动失败（退出码 \(task.terminationStatus)）：\(output)"
                     }
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self?.lastError = "Start error: \(error.localizedDescription)"
+                    self?.lastError = self?.usesEnglish == true
+                        ? "Start error: \(error.localizedDescription)"
+                        : "启动出错：\(error.localizedDescription)"
                 }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
@@ -647,7 +713,9 @@ class ConfigManager: ObservableObject {
 
     func startHotkeyTest() {
         hotkeyTestActive = true
-        hotkeyTestLog = "Listening for hotkey events...\nPress your configured hotkey now.\n\n"
+        hotkeyTestLog = usesEnglish
+            ? "Listening for hotkey events...\nPress your configured hotkey now.\n\n"
+            : "正在监听热键事件...\n现在请按下你配置的热键。\n\n"
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -675,7 +743,7 @@ class ConfigManager: ObservableObject {
             eventMonitor = nil
         }
         if let m = localEventMonitor { NSEvent.removeMonitor(m); localEventMonitor = nil }
-        hotkeyTestLog += "\nTest stopped.\n"
+        hotkeyTestLog += usesEnglish ? "\nTest stopped.\n" : "\n测试已停止。\n"
     }
 
     private var eventMonitor: Any?
@@ -750,13 +818,21 @@ class ConfigManager: ObservableObject {
 
 
     var selectedLocalModelLabel: String {
-        Self.localModelPresetLabels[normalizedModelPreset] ?? normalizedModelPreset
+        if usesEnglish {
+            return normalizedModelPreset == "fp16" ? "FP16 (higher accuracy)" : "Quantized (default, smaller)"
+        }
+        return normalizedModelPreset == "fp16" ? "FP16（精度更高）" : "量化版（默认，更轻量）"
     }
 
     var selectedLocalModelDownloadSummary: String {
-        normalizedModelPreset == "fp16"
-            ? "Downloads SenseVoice FP16 (~450 MB) from Hugging Face"
-            : "Downloads SenseVoice quantized (~230 MB) from Hugging Face"
+        if usesEnglish {
+            return normalizedModelPreset == "fp16"
+                ? "Downloads SenseVoice FP16 (~450 MB) from Hugging Face"
+                : "Downloads SenseVoice quantized (~230 MB) from Hugging Face"
+        }
+        return normalizedModelPreset == "fp16"
+            ? "从 Hugging Face 下载 SenseVoice FP16（约 450 MB）"
+            : "从 Hugging Face 下载 SenseVoice 量化版（约 230 MB）"
     }
 
     func defaultModelPath(for preset: String) -> String {
@@ -806,15 +882,17 @@ class ConfigManager: ObservableObject {
         let preset = normalizedModelPreset
         modelDownloading = true
         modelDownloadProgress = 0
-        modelDownloadStatus = "Preparing \(preset) model download..."
-        modelDownloadOutput = "Starting model download...\n"
+        modelDownloadStatus = usesEnglish ? "Preparing \(preset) model download..." : "正在准备 \(preset) 模型下载..."
+        modelDownloadOutput = usesEnglish ? "Starting model download...\n" : "开始下载模型...\n"
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             guard let binary = self.findOpenFlowBinary() else {
                 DispatchQueue.main.async {
-                    self.modelDownloadOutput += "Error: open-flow binary not found. Please install open-flow first.\n"
-                    self.modelDownloadStatus = "Download unavailable"
+                    self.modelDownloadOutput += self.usesEnglish
+                        ? "Error: open-flow binary not found. Please install open-flow first.\n"
+                        : "错误：未找到 open-flow 可执行文件，请先安装 open-flow。\n"
+                    self.modelDownloadStatus = self.usesEnglish ? "Download unavailable" : "无法下载"
                     self.modelDownloading = false
                 }
                 return
@@ -845,8 +923,10 @@ class ConfigManager: ObservableObject {
                 task.waitUntilExit()
             } catch {
                 DispatchQueue.main.async {
-                    self.modelDownloadStatus = "Download failed"
-                    self.modelDownloadOutput += "\nError: \(error.localizedDescription)\n"
+                    self.modelDownloadStatus = self.usesEnglish ? "Download failed" : "下载失败"
+                    self.modelDownloadOutput += self.usesEnglish
+                        ? "\nError: \(error.localizedDescription)\n"
+                        : "\n错误：\(error.localizedDescription)\n"
                 }
             }
 
@@ -857,11 +937,15 @@ class ConfigManager: ObservableObject {
                 self.modelDownloadProgress = task.terminationStatus == 0 ? 1.0 : self.modelDownloadProgress
                 self.checkModelReady()
                 if task.terminationStatus == 0 {
-                    self.modelDownloadStatus = "\(preset.uppercased()) model ready"
-                    self.modelDownloadOutput += "\nModel download complete!\n"
+                    self.modelDownloadStatus = self.usesEnglish
+                        ? "\(preset.uppercased()) model ready"
+                        : "\(preset.uppercased()) 模型已就绪"
+                    self.modelDownloadOutput += self.usesEnglish ? "\nModel download complete!\n" : "\n模型下载完成！\n"
                 } else {
-                    self.modelDownloadStatus = "Download failed"
-                    self.modelDownloadOutput += "\nDownload failed (exit code \(task.terminationStatus))\n"
+                    self.modelDownloadStatus = self.usesEnglish ? "Download failed" : "下载失败"
+                    self.modelDownloadOutput += self.usesEnglish
+                        ? "\nDownload failed (exit code \(task.terminationStatus))\n"
+                        : "\n下载失败（退出码 \(task.terminationStatus)）\n"
                 }
             }
         }
@@ -885,7 +969,9 @@ class ConfigManager: ObservableObject {
 
         DispatchQueue.main.async {
             self.modelDownloadProgress = min(max(percentValue / 100.0, 0), 1)
-            self.modelDownloadStatus = String(format: "Downloading %.1f / %.1f MB (%.0f%%)", currentMB, totalMB, percentValue)
+            self.modelDownloadStatus = self.usesEnglish
+                ? String(format: "Downloading %.1f / %.1f MB (%.0f%%)", currentMB, totalMB, percentValue)
+                : String(format: "正在下载 %.1f / %.1f MB (%.0f%%)", currentMB, totalMB, percentValue)
         }
     }
 
@@ -911,7 +997,7 @@ class ConfigManager: ObservableObject {
             task.standardOutput = pipe
             task.standardError = Pipe()
 
-            var result = "(No log file found)"
+            var result = self.usesEnglish ? "(No log file found)" : "（未找到日志文件）"
             if let _ = try? task.run() {
                 task.waitUntilExit()
                 if let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8),

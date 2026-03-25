@@ -167,6 +167,9 @@ impl Daemon {
     }
 
     pub async fn run(self) -> Result<()> {
+        let ui = crate::common::config::Config::load()
+            .map(|config| crate::common::ui::UiLanguage::from_config(&config))
+            .unwrap_or_default();
         self.log_memory_checkpoint("daemon_start", None);
 
         let mut tray_poll = tokio::time::interval(std::time::Duration::from_millis(200));
@@ -187,8 +190,8 @@ impl Daemon {
             current_exe, accessibility_ok, input_monitoring_ok
         );
         let microphone_ok = crate::hotkey::check_microphone_permission();
-        println!("🔎 权限诊断");
-        println!("   可执行文件: {}", current_exe);
+        println!("{}", ui.pick("🔎 权限诊断", "🔎 Permission Diagnostics"));
+        println!("   {} {}", ui.pick("可执行文件:", "Executable:"), current_exe);
         println!("   Accessibility: {}", accessibility_ok);
         println!("   Input Monitoring: {}", input_monitoring_ok);
         println!("   Microphone: {}", microphone_ok);
@@ -196,24 +199,24 @@ impl Daemon {
         // 请求缺失的权限（触发系统对话框）
         if !accessibility_ok {
             println!();
-            println!("⚠️  Accessibility 权限未授权——正在请求...");
+            println!("{}", ui.pick("⚠️  Accessibility 权限未授权——正在请求...", "⚠️  Accessibility permission not granted. Requesting now..."));
             request_accessibility_permission();
         }
         if !input_monitoring_ok {
             println!();
-            println!("⚠️  Input Monitoring 权限未授权——正在请求...");
+            println!("{}", ui.pick("⚠️  Input Monitoring 权限未授权——正在请求...", "⚠️  Input Monitoring permission not granted. Requesting now..."));
             crate::hotkey::request_input_monitoring_permission();
         }
         if !microphone_ok {
             println!();
-            println!("⚠️  麦克风权限尚未授权。");
+            println!("{}", ui.pick("⚠️  麦克风权限尚未授权。", "⚠️  Microphone permission is not granted yet."));
             crate::hotkey::request_microphone_permission();
         }
 
         if !accessibility_ok || !input_monitoring_ok {
             println!();
-            println!("⏳ 等待权限授权... 请在系统设置中授权，然后应用将重试。");
-            println!("   （如果授权后热键不工作，请重启应用）");
+            println!("{}", ui.pick("⏳ 等待权限授权... 请在系统设置中授权，然后应用将重试。", "⏳ Waiting for permissions... Grant access in System Settings, then the app will retry."));
+            println!("{}", ui.pick("   （如果授权后热键不工作，请重启应用）", "   (If the hotkey still does not work after granting access, restart the app.)"));
         }
 
         // ── Provider 状态检查 ──────────────────────────────────────────
@@ -261,16 +264,19 @@ impl Daemon {
 
         // ── 就绪提示 ──────────────────────────────────────────────────
         println!();
-        println!("✅ Open Flow 已就绪");
-        println!("   输入设备: {}", audio_info.device_name);
+        println!("{}", ui.pick("✅ Open Flow 已就绪", "✅ Open Flow is ready"));
+        println!("   {} {}", ui.pick("输入设备:", "Input Device:"), audio_info.device_name);
         println!(
-            "   音频设备: {}Hz / {} 通道",
-            audio_info.sample_rate, audio_info.channels
+            "{}",
+            ui.pick(
+                format!("   音频设备: {}Hz / {} 通道", audio_info.sample_rate, audio_info.channels),
+                format!("   Audio: {}Hz / {} channels", audio_info.sample_rate, audio_info.channels),
+            )
         );
         println!("   Provider: {}", self.provider.name());
         println!();
-        println!("🎙️  按热键开始录音，再按一次停止并转写");
-        println!("   托盘图标可查看状态（灰=待机 红=录音 黄=转写）");
+        println!("{}", ui.pick("🎙️  按热键开始录音，再按一次停止并转写", "🎙️  Press the hotkey to start recording, then press it again to stop and transcribe"));
+        println!("{}", ui.pick("   托盘图标可查看状态（灰=待机 红=录音 黄=转写）", "   Check the tray icon for status (gray = idle, red = recording, yellow = transcribing)"));
         println!();
 
         // ── 主事件循环 ────────────────────────────────────────────────
@@ -284,7 +290,13 @@ impl Daemon {
                         DaemonEvent::TranscriptionComplete(mut completed) => {
                             self.is_processing.store(false, Ordering::SeqCst);
                             self.set_tray(TrayIconState::Idle);
-                            println!("📝 转写完成: {}", completed.text);
+                            println!(
+                                "{}",
+                                ui.pick(
+                                    format!("📝 转写完成: {}", completed.text),
+                                    format!("📝 Transcription complete: {}", completed.text),
+                                )
+                            );
                             let output_started_at = std::time::Instant::now();
                             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                             if self.draft_mode_active.load(Ordering::SeqCst) {
@@ -308,7 +320,13 @@ impl Daemon {
                             }
                         }
                         DaemonEvent::HotkeyListenerDead => {
-                            eprintln!("❌ 热键监听线程已退出，daemon 停止。请运行 open-flow start 重启。");
+                            eprintln!(
+                                "{}",
+                                ui.pick(
+                                    "❌ 热键监听线程已退出，daemon 停止。请运行 open-flow start 重启。",
+                                    "❌ The hotkey listener thread exited, so the daemon stopped. Run `open-flow start` to restart it.",
+                                )
+                            );
                             break;
                         }
                     }
@@ -316,7 +334,13 @@ impl Daemon {
                         // daemon 每 200ms 检查托盘退出标志
                 _ = tray_poll.tick() => {
                     if self.tray.as_ref().map_or(false, |t| t.exit_requested()) {
-                        println!("👋 托盘退出信号已收到，daemon 即将停止...");
+                        println!(
+                            "{}",
+                            ui.pick(
+                                "👋 托盘退出信号已收到，daemon 即将停止...",
+                                "👋 Quit signal received from the tray. The daemon will stop now...",
+                            )
+                        );
                         break;
                     }
 
@@ -334,7 +358,11 @@ impl Daemon {
 
                         if elapsed.as_secs() >= MAX_RECORDING_DURATION_SECS {
                             eprintln!(
-                                "⚠️  录音已达到最大时长（2 小时），已自动停止并开始转写。"
+                                "{}",
+                                ui.pick(
+                                    "⚠️  录音已达到最大时长（2 小时），已自动停止并开始转写。",
+                                    "⚠️  Recording reached the maximum duration (2 hours). It was stopped automatically and transcription has started.",
+                                )
                             );
                             self.set_tray(TrayIconState::Transcribing);
                             if let Err(e) = self.stop_and_transcribe(&event_tx).await {
@@ -346,8 +374,11 @@ impl Daemon {
                         {
                             let remain = MAX_RECORDING_DURATION_SECS.saturating_sub(elapsed.as_secs());
                             eprintln!(
-                                "⚠️  录音时长接近上限，还可继续录制约 {} 秒。",
-                                remain
+                                "{}",
+                                ui.pick(
+                                    format!("⚠️  录音时长接近上限，还可继续录制约 {} 秒。", remain),
+                                    format!("⚠️  Recording is close to the limit. About {} seconds remain.", remain),
+                                )
                             );
                         }
                     }
@@ -586,7 +617,16 @@ impl Daemon {
             Some(format!("session_id={} session_buffer_len=0", session_id)),
         );
         println!("[Daemon] start_recording after_checkpoint");
-        println!("🔴 录音中... 再按热键停止");
+        let ui = crate::common::config::Config::load()
+            .map(|config| crate::common::ui::UiLanguage::from_config(&config))
+            .unwrap_or_default();
+        println!(
+            "{}",
+            ui.pick(
+                "🔴 录音中... 再按热键停止",
+                "🔴 Recording... press the hotkey again to stop",
+            )
+        );
         Ok(())
     }
 
@@ -632,10 +672,23 @@ impl Daemon {
                 session_buffer_capacity,
             )),
         );
+        let ui = crate::common::config::Config::load()
+            .map(|config| crate::common::ui::UiLanguage::from_config(&config))
+            .unwrap_or_default();
         println!(
-            "⏹️  录音停止 ({:.1}s / {} 样本)，正在转写...",
-            duration.as_secs_f32(),
-            buffer.len()
+            "{}",
+            ui.pick(
+                format!(
+                    "⏹️  录音停止 ({:.1}s / {} 样本)，正在转写...",
+                    duration.as_secs_f32(),
+                    buffer.len()
+                ),
+                format!(
+                    "⏹️  Recording stopped ({:.1}s / {} samples), transcribing...",
+                    duration.as_secs_f32(),
+                    buffer.len()
+                ),
+            )
         );
 
         let resource_after_record_stop = self.sample_resource_snapshot();
@@ -679,7 +732,13 @@ impl Daemon {
                     resource_after_asr: empty_resource_snapshot(),
                     resource_after_pipeline: empty_resource_snapshot(),
                 });
-            eprintln!("⚠️  录音为空，请检查麦克风权限（系统设置 > 隐私与安全性 > 麦克风）");
+            eprintln!(
+                "{}",
+                ui.pick(
+                    "⚠️  录音为空，请检查麦克风权限（系统设置 > 隐私与安全性 > 麦克风）",
+                    "⚠️  The recording is empty. Please check microphone permission in System Settings > Privacy & Security > Microphone.",
+                )
+            );
             return Ok(());
         }
 
@@ -728,11 +787,24 @@ impl Daemon {
                     resource_after_asr: empty_resource_snapshot(),
                     resource_after_pipeline: empty_resource_snapshot(),
                 });
-            eprintln!("⚠️  录音振幅极低（max={:.6}），麦克风可能未授权。", max_amp);
             eprintln!(
-                "   请前往：系统设置 > 隐私与安全性 > 麦克风，将 Open Flow.app 添加到列表并启用。"
+                "{}",
+                ui.pick(
+                    format!("⚠️  录音振幅极低（max={:.6}），麦克风可能未授权。", max_amp),
+                    format!("⚠️  Recording amplitude is very low (max={:.6}). Microphone permission may be missing.", max_amp),
+                )
             );
-            eprintln!("   然后完全退出并重新打开 Open Flow。");
+            eprintln!(
+                "{}",
+                ui.pick(
+                    "   请前往：系统设置 > 隐私与安全性 > 麦克风，将 Open Flow.app 添加到列表并启用。",
+                    "   Open System Settings > Privacy & Security > Microphone, then add and enable Open Flow.app.",
+                )
+            );
+            eprintln!(
+                "{}",
+                ui.pick("   然后完全退出并重新打开 Open Flow。", "   Then fully quit and reopen Open Flow.")
+            );
             return Ok(());
         }
 

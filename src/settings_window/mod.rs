@@ -7,6 +7,7 @@
 
 #[cfg(target_os = "macos")]
 mod platform {
+    use crate::common::{config::Config, ui::UiLanguage};
     use cocoa::foundation::{NSPoint, NSRect, NSSize};
     use objc::runtime::{Object, NO, YES};
     use objc::{class, msg_send, sel, sel_impl};
@@ -45,12 +46,15 @@ mod platform {
                     return None;
                 }
 
-                let title = ns_string("Open Flow Preferences");
+                let ui_language = Config::load()
+                    .map(|config| UiLanguage::from_config(&config))
+                    .unwrap_or_default();
+                let title = ns_string(ui_language.settings_window_title());
                 let _: () = msg_send![window, setTitle: title];
                 let _: () = msg_send![window, center];
 
                 // Build UI
-                Self::build_ui(window);
+                Self::build_ui(window, ui_language);
 
                 // Start hidden
                 let _: () = msg_send![window, orderOut: std::ptr::null::<Object>()];
@@ -79,30 +83,24 @@ mod platform {
             self.visible.load(Ordering::SeqCst)
         }
 
-        unsafe fn build_ui(window: *mut Object) {
+        unsafe fn build_ui(window: *mut Object, ui_language: UiLanguage) {
             let content: *mut Object = msg_send![window, contentView];
             let mut y = WINDOW_HEIGHT - 50.0;
             let label_x = 20.0;
             let row_height = 28.0;
 
             // Title
-            Self::add_label(content, "Open Flow Settings", label_x, y, true);
+            Self::add_label(content, ui_language.settings_heading(), label_x, y, true);
             y -= row_height + 8.0;
 
             // Info text
-            Self::add_label(
-                content,
-                "Edit config.toml to change settings.",
-                label_x,
-                y,
-                false,
-            );
+            Self::add_label(content, ui_language.settings_edit_config_hint(), label_x, y, false);
             y -= row_height;
-            Self::add_label(content, "Restart daemon after changes.", label_x, y, false);
+            Self::add_label(content, ui_language.settings_restart_hint(), label_x, y, false);
             y -= row_height + 16.0;
 
             // Current settings display
-            Self::add_label(content, "Current configuration:", label_x, y, true);
+            Self::add_label(content, ui_language.settings_current_config(), label_x, y, true);
             y -= row_height;
 
             // These will be updated in reload_values, but show placeholders
@@ -128,7 +126,7 @@ mod platform {
             );
             let button: *mut Object = msg_send![class!(NSButton), alloc];
             let button: *mut Object = msg_send![button, initWithFrame: btn_frame];
-            let btn_title = ns_string("Open Config File");
+            let btn_title = ns_string(ui_language.settings_open_config_file());
             let _: () = msg_send![button, setTitle: btn_title];
             let _: () = msg_send![button, setBezelStyle: 1i64]; // rounded
             let _: () = msg_send![content, addSubview: button];
@@ -158,14 +156,15 @@ mod platform {
 
         fn reload_values(&self) {
             let config = crate::common::config::Config::load().unwrap_or_default();
+            let ui_language = UiLanguage::from_config(&config);
             unsafe {
                 let content: *mut Object = msg_send![self.window, contentView];
                 let tag_base = 100i64;
                 let labels = [
-                    format!("Provider: {}", config.provider),
-                    format!("Hotkey: {}", config.hotkey),
-                    format!("Trigger: {}", config.trigger_mode),
-                    format!("Groq Model: {}", config.groq_model),
+                    format!("{}: {}", ui_language.settings_provider(), config.provider),
+                    format!("{}: {}", ui_language.settings_hotkey(), config.hotkey),
+                    format!("{}: {}", ui_language.settings_trigger(), config.trigger_mode),
+                    format!("{}: {}", ui_language.settings_groq_model(), config.groq_model),
                 ];
                 for (i, text) in labels.iter().enumerate() {
                     let tag = tag_base + i as i64;

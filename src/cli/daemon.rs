@@ -14,6 +14,7 @@ use std::sync::Arc;
 use crate::asr::groq::GroqAsrProvider;
 use crate::asr::{AsrProvider, LocalAsrProvider};
 use crate::common::config::Config;
+use crate::common::ui::UiLanguage;
 use crate::daemon::run_daemon;
 use crate::tray::{TrayIconState, TrayState};
 
@@ -327,6 +328,9 @@ fn check_and_download_app_update<F>(mut on_progress: F) -> Result<UpdateDownload
 where
     F: FnMut(u64, Option<u64>),
 {
+    let ui = Config::load()
+        .map(|config| UiLanguage::from_config(&config))
+        .unwrap_or_default();
     let (download_url, latest_tag) = fetch_latest_macos_app_asset()?;
     let current_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
     log_update_info(format!(
@@ -337,7 +341,13 @@ where
         return Ok(UpdateDownloadResult::UpToDate { latest_tag });
     }
 
-    println!("⬇️  检测到新版本 {}，正在下载更新包...", latest_tag);
+    println!(
+        "{}",
+        ui.pick(
+            format!("⬇️  检测到新版本 {}，正在下载更新包...", latest_tag),
+            format!("⬇️  New version {} found. Downloading update package...", latest_tag),
+        )
+    );
     let zip_path = download_latest_app_zip(&download_url, &latest_tag, |downloaded, total| {
         on_progress(downloaded, total)
     })?;
@@ -349,9 +359,16 @@ where
 
 #[cfg(target_os = "macos")]
 fn start_install_downloaded_app_update(zip_path: &Path, current_pid: u32) -> Result<()> {
+    let ui = Config::load()
+        .map(|config| UiLanguage::from_config(&config))
+        .unwrap_or_default();
     let app_bundle = running_app_bundle_path().ok_or_else(|| {
         anyhow::anyhow!(
-            "当前不是 .app 内运行。请从 /Applications/Open Flow.app 启动后再使用菜单升级。"
+            "{}",
+            ui.pick(
+                "当前不是 .app 内运行。请从 /Applications/Open Flow.app 启动后再使用菜单升级。",
+                "Open Flow is not running from an .app bundle. Please launch /Applications/Open Flow.app before updating from the menu."
+            )
         )
     })?;
 
@@ -362,16 +379,25 @@ fn start_install_downloaded_app_update(zip_path: &Path, current_pid: u32) -> Res
         current_pid
     ));
     launch_app_replacement_worker(&app_bundle, zip_path, current_pid)?;
-    println!("🚀 升级器已启动，Open Flow 即将退出并安装新版本");
+    println!(
+        "{}",
+        ui.pick(
+            "🚀 升级器已启动，Open Flow 即将退出并安装新版本",
+            "🚀 Updater launched. Open Flow will quit and install the new version."
+        )
+    );
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn show_update_popup(message: &str) {
+fn show_update_popup(ui: UiLanguage, message: &str) {
     let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!(
-        "display dialog \"{}\" buttons {{\"好\"}} default button \"好\" with title \"Open Flow 更新\"",
-        escaped
+        "display dialog \"{}\" buttons {{{}}} default button {} with title {}",
+        escaped,
+        ui.pick("\"好\"", "\"OK\""),
+        ui.pick("\"好\"", "\"OK\""),
+        ui.pick("\"Open Flow 更新\"", "\"Open Flow Update\"")
     );
     let _ = Command::new("/usr/bin/osascript")
         .arg("-e")
@@ -434,10 +460,19 @@ fn remove_pid_file() {
 
 /// 后台启动：spawn 子进程运行 daemon，父进程立即退出；关掉终端不影响子进程。
 pub fn start_background(model: Option<PathBuf>) -> anyhow::Result<()> {
+    let ui = Config::load()
+        .map(|config| UiLanguage::from_config(&config))
+        .unwrap_or_default();
     if let Some(pid) = read_pid() {
         if is_running(pid) {
-            println!("ℹ️  Open Flow 已在运行 (PID: {})", pid);
-            println!("   停止: open-flow stop");
+            println!(
+                "{}",
+                ui.pick(
+                    format!("ℹ️  Open Flow 已在运行 (PID: {})", pid),
+                    format!("ℹ️  Open Flow is already running (PID: {})", pid),
+                )
+            );
+            println!("   {}", ui.pick("停止: open-flow stop", "Stop: open-flow stop"));
             return Ok(());
         }
         remove_pid_file();
@@ -472,20 +507,35 @@ pub fn start_background(model: Option<PathBuf>) -> anyhow::Result<()> {
     // 父进程立即写 PID 文件，stop 命令无需等子进程就绪
     fs::write(pid_path()?, pid.to_string()).context("写入 PID 文件失败")?;
 
-    println!("✅ Open Flow 已在后台启动 (PID: {})", pid);
-    println!("   日志: {}", log.display());
-    println!("   停止: open-flow stop");
+    println!(
+        "{}",
+        ui.pick(
+            format!("✅ Open Flow 已在后台启动 (PID: {})", pid),
+            format!("✅ Open Flow started in the background (PID: {})", pid),
+        )
+    );
+    println!("   {} {}", ui.pick("日志:", "Log:"), log.display());
+    println!("   {}", ui.pick("停止: open-flow stop", "Stop: open-flow stop"));
     Ok(())
 }
 
 /// 前台启动：终端被占用，Ctrl+C 或托盘「退出」可停止。
 /// 主线程驱动 macOS NSRunLoop（托盘事件），tokio 跑背景线程（录音/转写/热键）。
 pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
+    let ui = Config::load()
+        .map(|config| UiLanguage::from_config(&config))
+        .unwrap_or_default();
     // ── 检查是否已在运行 ─────────────────────────────────────────────────
     if let Some(pid) = read_pid() {
         if is_running(pid) {
-            println!("ℹ️  Open Flow 已在运行 (PID: {})", pid);
-            println!("   停止: open-flow stop");
+            println!(
+                "{}",
+                ui.pick(
+                    format!("ℹ️  Open Flow 已在运行 (PID: {})", pid),
+                    format!("ℹ️  Open Flow is already running (PID: {})", pid),
+                )
+            );
+            println!("   {}", ui.pick("停止: open-flow stop", "Stop: open-flow stop"));
             return Ok(());
         }
         remove_pid_file();
@@ -568,9 +618,9 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     }
 
     use crate::draft_panel::{DraftPanel, DraftPanelEvent};
-    let draft_panel = DraftPanel::new().map(Arc::new);
+    let draft_mode_active = Arc::new(AtomicBool::new(true));
+    let draft_panel = DraftPanel::new(draft_mode_active.clone()).map(Arc::new);
     let (draft_tx, draft_rx) = std::sync::mpsc::sync_channel::<DraftPanelEvent>(64);
-    let draft_mode_active = Arc::new(AtomicBool::new(false));
     if draft_panel.is_some() {
         tracing::info!("✅ 草稿面板已创建");
     }
@@ -583,6 +633,7 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
 
     // ── 构建 ASR provider ──────────────────────────────────────────
     let config = Config::load().unwrap_or_default();
+    let ui = UiLanguage::from_config(&config);
     let provider: Arc<dyn AsrProvider> = match config.provider.as_str() {
         "groq" => {
             let api_key = config.resolved_groq_api_key();
@@ -592,30 +643,60 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
                 config.groq_language.clone(),
             ) {
                 Ok(p) => {
-                    println!("   Provider: Groq ({})", config.groq_model);
+                    println!(
+                        "   {}",
+                        ui.pick(
+                            format!("Provider: Groq ({})", config.groq_model),
+                            format!("Provider: Groq ({})", config.groq_model),
+                        )
+                    );
                     Arc::new(p)
                 }
                 Err(e) => {
-                    eprintln!("⚠️  Groq provider 初始化失败: {}。回退到本地模式。", e);
+                    eprintln!(
+                        "{}",
+                        ui.pick(
+                            format!("⚠️  Groq provider 初始化失败: {}。回退到本地模式。", e),
+                            format!("⚠️  Failed to initialize Groq provider: {}. Falling back to local mode.", e),
+                        )
+                    );
                     Arc::new(LocalAsrProvider::new(model_path.clone()))
                 }
             }
         }
         _ => {
-            println!("   Provider: Local (SenseVoice)");
+            println!("   {}", ui.pick("Provider: Local (SenseVoice)", "Provider: Local (SenseVoice)"));
             Arc::new(LocalAsrProvider::new(model_path.clone()))
         }
     };
 
     // ── 在专用线程运行 daemon（current_thread 运行时，Daemon 含 cpal::Stream 非 Send）
     let log = log_path()?;
-    println!("✅ Open Flow 已启动 (PID: {})", my_pid);
-    println!("   热键: {}", config.hotkey);
-    println!("   触发模式: {}", config.trigger_mode);
-    println!("   日志: {}", log.display());
+    println!(
+        "{}",
+        ui.pick(
+            format!("✅ Open Flow 已启动 (PID: {})", my_pid),
+            format!("✅ Open Flow started (PID: {})", my_pid),
+        )
+    );
+    println!("   {} {}", ui.pick("热键:", "Hotkey:"), config.hotkey);
+    println!("   {} {}", ui.pick("触发模式:", "Trigger Mode:"), config.trigger_mode);
+    println!("   {} {}", ui.pick("日志:", "Log:"), log.display());
     println!();
-    println!("   按 Ctrl+C 或托盘菜单「退出」可停止");
-    println!("   ⏳ 模型加载与预热约需 3-5 秒，完成后热键即可使用");
+    println!(
+        "{}",
+        ui.pick(
+            "   按 Ctrl+C 或托盘菜单「退出」可停止",
+            "   Press Ctrl+C or use the tray menu \"Quit\" to stop",
+        )
+    );
+    println!(
+        "{}",
+        ui.pick(
+            "   ⏳ 模型加载与预热约需 3-5 秒，完成后热键即可使用",
+            "   ⏳ Model loading and warmup take about 3-5 seconds. The hotkey will work once ready.",
+        )
+    );
 
     let daemon_alive = Arc::new(AtomicBool::new(true));
     let daemon_alive_clone = daemon_alive.clone();
@@ -700,15 +781,22 @@ fn run_main_loop(
     daemon_alive: &AtomicBool,
     current_pid: u32,
 ) {
+    let ui_language = crate::common::config::Config::load()
+        .map(|config| crate::common::ui::UiLanguage::from_config(&config))
+        .unwrap_or_default();
     #[cfg(target_os = "macos")]
     let mut downloaded_update_zip: Option<PathBuf> = None;
     #[cfg(target_os = "macos")]
     let mut update_download_rx: Option<std::sync::mpsc::Receiver<UpdateDownloadEvent>> = None;
 
     if let Some(t) = tray {
-        t.set_update_menu_text("检查更新");
+        t.set_update_menu_text(ui_language.tray_update());
         t.set_update_menu_enabled(true);
-        t.set_draft_menu_text("录音草稿");
+        t.set_draft_menu_text(if draft_mode_active.load(Ordering::SeqCst) {
+            ui_language.tray_draft_checked()
+        } else {
+            ui_language.tray_draft()
+        });
     }
 
     loop {
@@ -726,7 +814,7 @@ fn run_main_loop(
                 match rx.try_recv() {
                     Ok(UpdateDownloadEvent::Progress { percent }) => {
                         if let Some(t) = tray {
-                            t.set_update_menu_text(&format!("正在下载更新... {}%", percent));
+                            t.set_update_menu_text(&ui_language.tray_update_progress(percent));
                             t.set_update_menu_enabled(false);
                         }
                     }
@@ -735,10 +823,16 @@ fn run_main_loop(
                     }))) => {
                         keep_rx = false;
                         if let Some(t) = tray {
-                            t.set_update_menu_text("检查更新");
+                            t.set_update_menu_text(ui_language.tray_update());
                             t.set_update_menu_enabled(true);
                         }
-                        show_update_popup(&format!("已是最新版本（{}）", latest_tag));
+                        show_update_popup(
+                            ui_language,
+                            &ui_language.pick(
+                                format!("已是最新版本（{}）", latest_tag),
+                                format!("You're already on the latest version ({})", latest_tag),
+                            ),
+                        );
                         break;
                     }
                     Ok(UpdateDownloadEvent::Completed(Ok(
@@ -750,23 +844,32 @@ fn run_main_loop(
                         keep_rx = false;
                         downloaded_update_zip = Some(zip_path);
                         if let Some(t) = tray {
-                            t.set_update_menu_text("重启以应用更新");
+                            t.set_update_menu_text(ui_language.tray_restart_to_apply_update());
                             t.set_update_menu_enabled(true);
                         }
-                        show_update_popup(&format!(
-                            "新版本 {} 安装包已下载，点击“重启以应用更新”开始安装。",
-                            latest_tag
-                        ));
+                        show_update_popup(
+                            ui_language,
+                            &ui_language.pick(
+                                format!("新版本 {} 安装包已下载，点击“重启以应用更新”开始安装。", latest_tag),
+                                format!("The installer for {} is ready. Click \"Restart to Apply Update\" to begin installation.", latest_tag),
+                            ),
+                        );
                         break;
                     }
                     Ok(UpdateDownloadEvent::Completed(Err(err_msg))) => {
                         keep_rx = false;
                         eprintln!("[Updater] 更新任务失败：{}", err_msg);
                         if let Some(t) = tray {
-                            t.set_update_menu_text("检查更新");
+                            t.set_update_menu_text(ui_language.tray_update());
                             t.set_update_menu_enabled(true);
                         }
-                        show_update_popup(&format!("更新失败：{}", err_msg));
+                        show_update_popup(
+                            ui_language,
+                            &ui_language.pick(
+                                format!("更新失败：{}", err_msg),
+                                format!("Update failed: {}", err_msg),
+                            ),
+                        );
                         break;
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -775,10 +878,13 @@ fn run_main_loop(
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         keep_rx = false;
                         if let Some(t) = tray {
-                            t.set_update_menu_text("检查更新");
+                            t.set_update_menu_text(ui_language.tray_update());
                             t.set_update_menu_enabled(true);
                         }
-                        show_update_popup("更新任务中断，请重试。");
+                        show_update_popup(
+                            ui_language,
+                            ui_language.pick("更新任务中断，请重试。", "The update task was interrupted. Please try again."),
+                        );
                         break;
                     }
                 }
@@ -816,9 +922,18 @@ fn run_main_loop(
                 .unwrap_or(false)
         {
             draft_mode_active.store(false, Ordering::SeqCst);
-            if let Some(t) = tray {
-                t.set_draft_menu_text("录音草稿");
+            if let Some(panel) = draft_panel {
+                panel.set_draft_mode_enabled(false);
+                panel.hide();
             }
+        }
+
+        if let Some(t) = tray {
+            t.set_draft_menu_text(if draft_mode_active.load(Ordering::SeqCst) {
+                ui_language.tray_draft_checked()
+            } else {
+                ui_language.tray_draft()
+            });
         }
 
         // 驱动平台事件循环：macOS NSRunLoop
@@ -841,15 +956,8 @@ fn run_main_loop(
             let next = !draft_mode_active.load(Ordering::SeqCst);
             draft_mode_active.store(next, Ordering::SeqCst);
 
-            if let Some(t) = tray {
-                t.set_draft_menu_text(if next {
-                    "录音草稿 ✓"
-                } else {
-                    "录音草稿"
-                });
-            }
-
             if let Some(panel) = draft_panel {
+                panel.set_draft_mode_enabled(next);
                 if next {
                     panel.show();
                 } else {
@@ -866,17 +974,29 @@ fn run_main_loop(
                     Ok(_) => break,
                     Err(e) => {
                         eprintln!("⚠️  自动升级失败: {}", e);
-                        show_update_popup(&format!("自动升级失败：{}", e));
+                        show_update_popup(
+                            ui_language,
+                            &ui_language.pick(
+                                format!("自动升级失败：{}", e),
+                                format!("Automatic update failed: {}", e),
+                            ),
+                        );
                     }
                 }
             } else if update_download_rx.is_some() {
-                show_update_popup("正在后台下载更新包，请稍候。");
+                show_update_popup(
+                    ui_language,
+                    ui_language.pick(
+                        "正在后台下载更新包，请稍候。",
+                        "The update package is downloading in the background. Please wait.",
+                    ),
+                );
             } else {
                 let (tx, rx) = std::sync::mpsc::channel::<UpdateDownloadEvent>();
                 update_download_rx = Some(rx);
 
                 if let Some(t) = tray {
-                    t.set_update_menu_text("正在后台下载更新...");
+                    t.set_update_menu_text(ui_language.tray_update_downloading());
                     t.set_update_menu_enabled(false);
                 }
 
@@ -1030,21 +1150,42 @@ fn pump_run_loop_100ms() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub async fn stop() -> Result<()> {
+    let ui = Config::load()
+        .map(|config| UiLanguage::from_config(&config))
+        .unwrap_or_default();
     let pid = match read_pid() {
         Some(p) => p,
         None => {
-            println!("ℹ️  daemon 未运行（找不到 PID 文件）");
+            println!(
+                "{}",
+                ui.pick(
+                    "ℹ️  daemon 未运行（找不到 PID 文件）",
+                    "ℹ️  daemon is not running (PID file not found)",
+                )
+            );
             return Ok(());
         }
     };
 
     if !is_running(pid) {
-        println!("ℹ️  daemon 未运行（PID {} 不存在）", pid);
+        println!(
+            "{}",
+            ui.pick(
+                format!("ℹ️  daemon 未运行（PID {} 不存在）", pid),
+                format!("ℹ️  daemon is not running (PID {} does not exist)", pid),
+            )
+        );
         remove_pid_file();
         return Ok(());
     }
 
-    println!("⏹️  正在停止 daemon (PID: {})...", pid);
+    println!(
+        "{}",
+        ui.pick(
+            format!("⏹️  正在停止 daemon (PID: {})...", pid),
+            format!("⏹️  Stopping daemon (PID: {})...", pid),
+        )
+    );
 
     #[cfg(unix)]
     {
@@ -1053,14 +1194,17 @@ pub async fn stop() -> Result<()> {
             std::thread::sleep(std::time::Duration::from_millis(100));
             if !is_running(pid) {
                 remove_pid_file();
-                println!("✅ daemon 已停止");
+                println!("{}", ui.pick("✅ daemon 已停止", "✅ daemon stopped"));
                 return Ok(());
             }
         }
         unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
         std::thread::sleep(std::time::Duration::from_millis(500));
         remove_pid_file();
-        println!("✅ daemon 已停止（强制终止）");
+        println!(
+            "{}",
+            ui.pick("✅ daemon 已停止（强制终止）", "✅ daemon stopped (force killed)")
+        );
     }
 
     #[cfg(windows)]
@@ -1077,7 +1221,7 @@ pub async fn stop() -> Result<()> {
             }
         }
         remove_pid_file();
-        println!("✅ daemon 已停止");
+        println!("{}", ui.pick("✅ daemon 已停止", "✅ daemon stopped"));
     }
 
     Ok(())
@@ -1096,6 +1240,9 @@ struct PermissionSnapshot {
 }
 
 pub async fn permissions(json: bool) -> Result<()> {
+    let ui = Config::load()
+        .map(|config| UiLanguage::from_config(&config))
+        .unwrap_or_default();
     let current_exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|e| format!("<unavailable: {e}>"));
@@ -1111,8 +1258,8 @@ pub async fn permissions(json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("Open Flow 权限状态");
-    println!("  可执行文件: {}", snapshot.current_exe);
+    println!("{}", ui.pick("Open Flow 权限状态", "Open Flow Permission Status"));
+    println!("  {} {}", ui.pick("可执行文件:", "Executable:"), snapshot.current_exe);
     println!("  Accessibility: {}", snapshot.accessibility);
     println!("  Input Monitoring: {}", snapshot.input_monitoring);
     println!("  Microphone: {}", snapshot.microphone);
@@ -1121,29 +1268,37 @@ pub async fn permissions(json: bool) -> Result<()> {
 
 pub async fn status() -> Result<()> {
     let config = Config::load()?;
+    let ui = UiLanguage::from_config(&config);
 
     match read_pid() {
         Some(pid) if is_running(pid) => {
             let uptime = get_uptime_str(pid);
-            println!("Open Flow daemon 状态");
-            println!("  状态:     ✅ 运行中");
+            println!("{}", ui.pick("Open Flow daemon 状态", "Open Flow daemon status"));
+            println!("  {}     {}", ui.pick("状态:", "Status:"), ui.pick("✅ 运行中", "✅ Running"));
             println!("  PID:      {}", pid);
-            println!("  运行:     {}", uptime);
-            println!("  模型:     {:?}", config.model_path.unwrap_or_default());
+            println!("  {}     {}", ui.pick("运行:", "Uptime:"), uptime);
+            println!("  {}     {:?}", ui.pick("模型:", "Model:"), config.model_path.unwrap_or_default());
             println!("  Provider: {}", config.provider);
-            println!("  热键:     {}", config.hotkey);
-            println!("  触发模式: {}", config.trigger_mode);
-            println!("  日志:     {}", log_path()?.display());
+            println!("  {}     {}", ui.pick("热键:", "Hotkey:"), config.hotkey);
+            println!("  {} {}", ui.pick("触发模式:", "Trigger Mode:"), config.trigger_mode);
+            println!("  {}     {}", ui.pick("日志:", "Log:"), log_path()?.display());
         }
         Some(pid) => {
-            println!("Open Flow daemon 状态");
-            println!("  状态:   ❌ 未运行（PID {} 已失效）", pid);
+            println!("{}", ui.pick("Open Flow daemon 状态", "Open Flow daemon status"));
+            println!(
+                "  {}   {}",
+                ui.pick("状态:", "Status:"),
+                ui.pick(
+                    format!("❌ 未运行（PID {} 已失效）", pid),
+                    format!("❌ Not running (PID {} is stale)", pid),
+                )
+            );
             remove_pid_file();
         }
         None => {
-            println!("Open Flow daemon 状态");
-            println!("  状态:   ❌ 未运行");
-            println!("  启动:   open-flow start");
+            println!("{}", ui.pick("Open Flow daemon 状态", "Open Flow daemon status"));
+            println!("  {}   {}", ui.pick("状态:", "Status:"), ui.pick("❌ 未运行", "❌ Not running"));
+            println!("  {}   open-flow start", ui.pick("启动:", "Start:"));
         }
     }
     Ok(())

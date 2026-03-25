@@ -43,6 +43,8 @@ pub struct Config {
     pub model_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_preset: Option<String>,
+    #[serde(default = "default_ui_language")]
+    pub ui_language: String,
     #[serde(default = "default_provider")]
     pub provider: String,
     #[serde(default)]
@@ -70,11 +72,14 @@ pub struct Config {
 fn default_provider() -> String {
     "local".into()
 }
+fn default_ui_language() -> String {
+    "zh".into()
+}
 fn default_groq_model() -> String {
     "whisper-large-v3-turbo".into()
 }
 fn default_correction_model() -> String {
-    "GLM-4-Flash-250414".into()
+    "GLM-4.7-Flash".into()
 }
 fn default_hotkey() -> String {
     "right_cmd".into()
@@ -98,6 +103,7 @@ impl Default for Config {
         Self {
             model_path: None,
             model_preset: None,
+            ui_language: default_ui_language(),
             provider: default_provider(),
             correction_enabled: String::new(),
             correction_model: default_correction_model(),
@@ -213,6 +219,10 @@ impl Config {
 
     pub fn personal_vocabulary_path() -> Result<PathBuf> {
         Ok(Self::data_dir()?.join("personal_vocabulary.txt"))
+    }
+
+    pub fn correction_system_prompt_path() -> Result<PathBuf> {
+        Ok(Self::data_dir()?.join("correction_system_prompt.txt"))
     }
 
     /// 设置模型预设并写回 config

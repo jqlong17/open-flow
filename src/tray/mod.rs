@@ -15,6 +15,7 @@ pub enum TrayIconState {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::TrayIconState;
+    use crate::common::{config::Config, ui::UiLanguage};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use tracing::info;
@@ -61,6 +62,7 @@ mod platform {
         icon_idle: Icon,
         icon_recording: Icon,
         icon_transcribing: Icon,
+        ui_language: UiLanguage,
         status_item: MenuItem,
         update_item: MenuItem,
         draft_item: MenuItem,
@@ -73,6 +75,9 @@ mod platform {
 
     impl TrayState {
         pub fn new() -> Result<(Self, TrayHandle), tray_icon::Error> {
+            let ui_language = Config::load()
+                .map(|config| UiLanguage::from_config(&config))
+                .unwrap_or_default();
             let icon_idle = create_circle_icon(128, 128, 128);
             let icon_recording = create_circle_icon(255, 80, 80);
             let icon_transcribing = create_circle_icon(255, 200, 0);
@@ -89,11 +94,12 @@ mod platform {
                 true,
                 None,
             );
-            let update = MenuItem::with_id("update", "检查更新", true, None);
-            let draft = MenuItem::with_id("draft", "录音草稿", true, None);
-            let status_item = MenuItem::with_id("status", "状态：待机", false, None);
-            let prefs = MenuItem::with_id("prefs", "偏好设置...", true, None);
-            let exit = MenuItem::with_id("exit", "退出", true, None);
+            let update = MenuItem::with_id("update", ui_language.tray_update(), true, None);
+            let draft = MenuItem::with_id("draft", ui_language.tray_draft(), true, None);
+            let status_item = MenuItem::with_id("status", ui_language.status_idle(), false, None);
+            let prefs =
+                MenuItem::with_id("prefs", ui_language.tray_preferences(), true, None);
+            let exit = MenuItem::with_id("exit", ui_language.tray_exit(), true, None);
 
             let menu = Menu::with_items(&[&title, &update, &draft, &status_item, &prefs, &exit])
                 .map_err(|e| {
@@ -105,7 +111,7 @@ mod platform {
 
             let tray_icon = TrayIconBuilder::new()
                 .with_menu(Box::new(menu))
-                .with_tooltip("Open Flow - 语音输入")
+                .with_tooltip(ui_language.tray_tooltip())
                 .with_icon(icon_idle.clone())
                 .build()?;
 
@@ -120,6 +126,7 @@ mod platform {
                 icon_idle,
                 icon_recording,
                 icon_transcribing,
+                ui_language,
                 status_item,
                 update_item: update,
                 draft_item: draft,
@@ -166,9 +173,14 @@ mod platform {
 
         fn apply_state(&self, state: TrayIconState) {
             let (icon, text) = match state {
-                TrayIconState::Idle => (&self.icon_idle, "状态：待机"),
-                TrayIconState::Recording => (&self.icon_recording, "状态：录音中"),
-                TrayIconState::Transcribing => (&self.icon_transcribing, "状态：转写中"),
+                TrayIconState::Idle => (&self.icon_idle, self.ui_language.status_idle()),
+                TrayIconState::Recording => {
+                    (&self.icon_recording, self.ui_language.status_recording())
+                }
+                TrayIconState::Transcribing => (
+                    &self.icon_transcribing,
+                    self.ui_language.status_transcribing(),
+                ),
             };
             if let Err(e) = self.tray_icon.set_icon(Some(icon.clone())) {
                 tracing::warn!("更新托盘图标失败: {:?}", e);

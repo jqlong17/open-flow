@@ -377,6 +377,9 @@ pub fn check_input_monitoring_permission() -> bool {
 
 /// 请求 Accessibility 权限——触发 macOS 系统对话框
 pub fn request_accessibility_permission() {
+    let ui = crate::common::config::Config::load()
+        .map(|config| crate::common::ui::UiLanguage::from_config(&config))
+        .unwrap_or_default();
     #[cfg(target_os = "macos")]
     {
         use core_foundation::base::TCFType;
@@ -399,14 +402,38 @@ pub fn request_accessibility_permission() {
         }
     }
 
-    warn!("需要 Accessibility 权限才能监听全局热键");
-    println!("⚠️  需要 Accessibility 权限");
-    println!("请前往：系统设置 > 隐私与安全性 > 辅助功能");
-    println!("将 Open Flow.app 添加到列表并启用，然后完全退出后重新打开应用。");
+    warn!(
+        "{}",
+        ui.pick(
+            "需要 Accessibility 权限才能监听全局热键",
+            "Accessibility permission is required to listen for global hotkeys",
+        )
+    );
+    println!(
+        "{}",
+        ui.pick("⚠️  需要 Accessibility 权限", "⚠️  Accessibility permission required")
+    );
+    println!(
+        "{}",
+        ui.pick(
+            "请前往：系统设置 > 隐私与安全性 > 辅助功能",
+            "Please open: System Settings > Privacy & Security > Accessibility",
+        )
+    );
+    println!(
+        "{}",
+        ui.pick(
+            "将 Open Flow.app 添加到列表并启用，然后完全退出后重新打开应用。",
+            "Add Open Flow.app to the list and enable it, then fully quit and reopen the app.",
+        )
+    );
 }
 
 /// 请求 Input Monitoring 权限——触发 macOS 系统对话框
 pub fn request_input_monitoring_permission() {
+    let ui = crate::common::config::Config::load()
+        .map(|config| crate::common::ui::UiLanguage::from_config(&config))
+        .unwrap_or_default();
     #[cfg(target_os = "macos")]
     {
         #[link(name = "ApplicationServices", kind = "framework")]
@@ -419,17 +446,59 @@ pub fn request_input_monitoring_permission() {
         }
     }
 
-    warn!("需要 Input Monitoring 权限才能监听全局热键");
-    println!("⚠️  需要“输入监控”权限");
-    println!("请前往：系统设置 > 隐私与安全性 > 输入监控");
-    println!("将 Open Flow.app 添加到列表并启用，然后完全退出后重新打开应用。");
+    warn!(
+        "{}",
+        ui.pick(
+            "需要 Input Monitoring 权限才能监听全局热键",
+            "Input Monitoring permission is required to listen for global hotkeys",
+        )
+    );
+    println!(
+        "{}",
+        ui.pick("⚠️  需要“输入监控”权限", "⚠️  Input Monitoring permission required")
+    );
+    println!(
+        "{}",
+        ui.pick(
+            "请前往：系统设置 > 隐私与安全性 > 输入监控",
+            "Please open: System Settings > Privacy & Security > Input Monitoring",
+        )
+    );
+    println!(
+        "{}",
+        ui.pick(
+            "将 Open Flow.app 添加到列表并启用，然后完全退出后重新打开应用。",
+            "Add Open Flow.app to the list and enable it, then fully quit and reopen the app.",
+        )
+    );
 }
 
 /// 请求麦克风权限
 pub fn request_microphone_permission() {
-    info!("麦克风权限尚未授权。首次录音时将弹出系统对话框。");
-    println!("   首次录音时将弹出麦克风权限对话框。");
-    println!("   如果没有弹出，请前往：系统设置 > 隐私与安全性 > 麦克风");
+    let ui = crate::common::config::Config::load()
+        .map(|config| crate::common::ui::UiLanguage::from_config(&config))
+        .unwrap_or_default();
+    info!(
+        "{}",
+        ui.pick(
+            "麦克风权限尚未授权。首次录音时将弹出系统对话框。",
+            "Microphone permission is not granted yet. A system prompt will appear the first time you record.",
+        )
+    );
+    println!(
+        "{}",
+        ui.pick(
+            "   首次录音时将弹出麦克风权限对话框。",
+            "   A microphone permission dialog will appear the first time you record.",
+        )
+    );
+    println!(
+        "{}",
+        ui.pick(
+            "   如果没有弹出，请前往：系统设置 > 隐私与安全性 > 麦克风",
+            "   If it does not appear, open: System Settings > Privacy & Security > Microphone",
+        )
+    );
 }
 
 /// 检查麦克风权限状态。
@@ -473,6 +542,6 @@ mod tests {
     #[test]
     fn test_check_permission() {
         let has_permission = check_accessibility_permission();
-        println!("Accessibility 权限状态: {}", has_permission);
+        println!("Accessibility permission status: {}", has_permission);
     }
 }

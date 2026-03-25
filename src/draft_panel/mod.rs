@@ -19,18 +19,21 @@ mod platform {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::OnceLock;
 
-    const PANEL_WIDTH: f64 = 600.0;
-    const PANEL_HEIGHT: f64 = 170.0;
+    const PANEL_WIDTH: f64 = 740.0;
+    const PANEL_HEIGHT: f64 = 1000.0;
     const NS_BACKING_STORE_BUFFERED: u64 = 2;
     const AUTORESIZE_WIDTH_HEIGHT: u64 = 18;
     const AUTORESIZE_BOTTOM_RIGHT: u64 = 33;
     const COMMAND_KEY_MASK: u64 = 1 << 20;
+    const NS_SWITCH_BUTTON: i64 = 3;
 
     pub struct DraftPanel {
         window: id,
         text_view: id,
+        toggle_button: id,
         _action_target: id,
         _window_delegate: id,
+        draft_mode_active: std::sync::Arc<AtomicBool>,
         visible: Box<AtomicBool>,
         close_requested: Box<AtomicBool>,
     }
@@ -43,6 +46,15 @@ mod platform {
         let ptr = *CLASS.get_or_init(|| unsafe {
             if let Some(mut decl) = ClassDecl::new("OpenFlowDraftActionTarget", class!(NSObject)) {
                 decl.add_ivar::<id>("textView");
+                decl.add_ivar::<usize>("draftModePtr");
+                decl.add_method(
+                    sel!(clearClicked:),
+                    clear_clicked as extern "C" fn(&Object, Sel, id),
+                );
+                decl.add_method(
+                    sel!(toggleDraftMode:),
+                    toggle_draft_mode as extern "C" fn(&Object, Sel, id),
+                );
                 decl.add_method(
                     sel!(copyAllClicked:),
                     copy_all_clicked as extern "C" fn(&Object, Sel, id),
@@ -149,6 +161,28 @@ mod platform {
         }
     }
 
+    extern "C" fn clear_clicked(this: &Object, _cmd: Sel, _sender: id) {
+        unsafe {
+            let text_view: id = *this.get_ivar("textView");
+            if text_view != nil {
+                let empty = NSString::alloc(nil).init_str("");
+                let _: () = msg_send![text_view, setString: empty];
+            }
+        }
+    }
+
+    extern "C" fn toggle_draft_mode(this: &Object, _cmd: Sel, sender: id) {
+        unsafe {
+            let draft_mode_ptr: usize = *this.get_ivar("draftModePtr");
+            if draft_mode_ptr != 0 {
+                let state: i64 = msg_send![sender, state];
+                let enabled = state != 0;
+                let draft_mode = draft_mode_ptr as *const AtomicBool;
+                (*draft_mode).store(enabled, Ordering::SeqCst);
+            }
+        }
+    }
+
     extern "C" fn draft_window_will_close(this: &Object, _cmd: Sel, _notification: id) {
         unsafe {
             let visible_ptr: usize = *this.get_ivar("visiblePtr");
@@ -223,8 +257,11 @@ mod platform {
     }
 
     impl DraftPanel {
-        pub fn new() -> Option<Self> {
+        pub fn new(draft_mode_active: std::sync::Arc<AtomicBool>) -> Option<Self> {
             unsafe {
+                let ui_language = crate::common::config::Config::load()
+                    .map(|config| crate::common::ui::UiLanguage::from_config(&config))
+                    .unwrap_or_default();
                 let visible = Box::new(AtomicBool::new(false));
                 let close_requested = Box::new(AtomicBool::new(false));
                 let screen: id = msg_send![class!(NSScreen), mainScreen];
@@ -248,7 +285,7 @@ mod platform {
                     return None;
                 }
 
-                let title = NSString::alloc(nil).init_str("录音草稿");
+                let title = NSString::alloc(nil).init_str(ui_language.draft_panel_title());
                 let _: () = msg_send![window, setTitle: title];
                 let _: () = msg_send![window, setReleasedWhenClosed: NO];
 
@@ -291,33 +328,67 @@ mod platform {
                 let font: id = msg_send![class!(NSFont), systemFontOfSize: 14.0f64];
                 let _: () = msg_send![text_view, setFont: font];
 
+                let clear_button_frame = NSRect::new(
+                    NSPoint::new(content_frame.size.width - 168.0, 8.0),
+                    NSSize::new(72.0, 24.0),
+                );
+                let clear_button: id = msg_send![class!(NSButton), alloc];
+                let clear_button: id = msg_send![clear_button, initWithFrame: clear_button_frame];
+                let _: () = msg_send![clear_button, setTitle: NSString::alloc(nil).init_str(ui_language.clear())];
+                let _: () = msg_send![clear_button, setBezelStyle: 1i64];
+                let _: () = msg_send![clear_button, setAutoresizingMask: AUTORESIZE_BOTTOM_RIGHT];
+
                 let copy_button_frame = NSRect::new(
                     NSPoint::new(content_frame.size.width - 88.0, 8.0),
                     NSSize::new(72.0, 24.0),
                 );
                 let copy_button: id = msg_send![class!(NSButton), alloc];
                 let copy_button: id = msg_send![copy_button, initWithFrame: copy_button_frame];
-                let _: () = msg_send![copy_button, setTitle: NSString::alloc(nil).init_str("复制")];
+                let _: () = msg_send![copy_button, setTitle: NSString::alloc(nil).init_str(ui_language.copy())];
                 let _: () = msg_send![copy_button, setBezelStyle: 1i64];
                 let _: () = msg_send![copy_button, setAutoresizingMask: AUTORESIZE_BOTTOM_RIGHT];
 
                 let target_class = action_target_class();
                 let action_target: id = msg_send![target_class, new];
                 (&mut *action_target).set_ivar("textView", text_view);
+                (&mut *action_target).set_ivar(
+                    "draftModePtr",
+                    std::sync::Arc::as_ptr(&draft_mode_active) as usize,
+                );
 
+                let toggle_button_frame = NSRect::new(
+                    NSPoint::new(content_frame.size.width - 278.0, 10.0),
+                    NSSize::new(96.0, 20.0),
+                );
+                let toggle_button: id = msg_send![class!(NSButton), alloc];
+                let toggle_button: id = msg_send![toggle_button, initWithFrame: toggle_button_frame];
+                let _: () = msg_send![toggle_button, setButtonType: NS_SWITCH_BUTTON];
+                let _: () = msg_send![toggle_button, setTitle: NSString::alloc(nil).init_str(ui_language.draft_panel_enabled())];
+                let _: () = msg_send![toggle_button, setState: if draft_mode_active.load(Ordering::SeqCst) { 1i64 } else { 0i64 }];
+                let _: () = msg_send![toggle_button, setAutoresizingMask: AUTORESIZE_BOTTOM_RIGHT];
+                let _: () = msg_send![toggle_button, setToolTip: NSString::alloc(nil).init_str(ui_language.draft_panel_enabled_tooltip())];
+                let _: () = msg_send![toggle_button, setTarget: action_target];
+                let _: () = msg_send![toggle_button, setAction: sel!(toggleDraftMode:)];
+
+                let _: () = msg_send![clear_button, setTarget: action_target];
+                let _: () = msg_send![clear_button, setAction: sel!(clearClicked:)];
                 let _: () = msg_send![copy_button, setTarget: action_target];
                 let _: () = msg_send![copy_button, setAction: sel!(copyAllClicked:)];
 
                 let _: () = msg_send![scroll_view, setDocumentView: text_view];
                 let _: () = msg_send![content_view, addSubview: scroll_view];
+                let _: () = msg_send![content_view, addSubview: toggle_button];
+                let _: () = msg_send![content_view, addSubview: clear_button];
                 let _: () = msg_send![content_view, addSubview: copy_button];
                 let _: () = msg_send![window, orderOut: nil];
 
                 Some(Self {
                     window,
                     text_view,
+                    toggle_button,
                     _action_target: action_target,
                     _window_delegate: window_delegate,
+                    draft_mode_active,
                     visible,
                     close_requested,
                 })
@@ -388,6 +459,13 @@ mod platform {
         pub fn clear(&self) {
             self.set_text("");
         }
+
+        pub fn set_draft_mode_enabled(&self, enabled: bool) {
+            self.draft_mode_active.store(enabled, Ordering::SeqCst);
+            unsafe {
+                let _: () = msg_send![self.toggle_button, setState: if enabled { 1i64 } else { 0i64 }];
+            }
+        }
     }
 }
 
@@ -396,7 +474,7 @@ mod platform {
     pub struct DraftPanel;
 
     impl DraftPanel {
-        pub fn new() -> Option<Self> {
+        pub fn new(_draft_mode_active: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Option<Self> {
             Some(Self)
         }
 
@@ -417,6 +495,8 @@ mod platform {
         pub fn append_text(&self, _text: &str) {}
 
         pub fn clear(&self) {}
+
+        pub fn set_draft_mode_enabled(&self, _enabled: bool) {}
     }
 }
 
