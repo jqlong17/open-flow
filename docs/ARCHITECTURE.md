@@ -270,17 +270,18 @@ cargo build --release
 
 | 平台 | 架构 | 发版产物 |
 |------|------|----------|
-| macOS | aarch64-apple-darwin | CLI tar.gz + .app zip |
+| macOS | aarch64-apple-darwin | CLI tar.gz（CI）+ `.app` zip（开发者本机签名后手动上传） |
 | macOS | x86_64-apple-darwin | 需从源码编译（ONNX Runtime 无 x86 预编译时） |
 | Windows | x86_64-pc-windows-msvc | CLI zip |
 | Linux | x86_64-unknown-linux-gnu | CLI tar.gz |
 
 ### 发布方式
 
-1. **GitHub Releases**：push tag `v*` 触发 CI，构建三端预编译包并创建 Release。
-2. **install.sh**：macOS `curl | sh` 一键安装。
-3. **README 一键安装**：Windows（PowerShell）、Linux（bash）各一条命令下载解压并加入 PATH。
-4. **Homebrew**（规划中）：`brew install open-flow`。
+1. **GitHub Releases**：push tag `v*` 触发 CI，构建 macOS/Linux/Windows CLI 预编译包并创建 Release。
+2. **macOS `.app`**：由开发者本机执行 `./scripts/release.sh` 打包并上传到对应 Release，避免 CI 生成 `ad-hoc` 签名导致权限身份漂移。
+3. **install.sh**：macOS `curl | sh` 一键安装。
+4. **README 一键安装**：Windows（PowerShell）、Linux（bash）各一条命令下载解压并加入 PATH。
+5. **Homebrew**（规划中）：`brew install open-flow`。
 
 ---
 

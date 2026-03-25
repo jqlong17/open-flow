@@ -51,6 +51,19 @@ impl TextCorrector {
             return Ok(String::new());
         }
 
+        println!(
+            "[Pipeline] llm_correction_start model={} raw_chars={} vocab_count={}",
+            self.model,
+            raw_text.chars().count(),
+            self.vocabulary.len()
+        );
+        info!(
+            "[Pipeline] stage=llm_correction_start model={} raw_chars={} vocab_count={}",
+            self.model,
+            raw_text.chars().count(),
+            self.vocabulary.len()
+        );
+
         let system_prompt = build_system_prompt(&self.vocabulary);
         let request = BigModelChatRequest {
             model: self.model.clone(),
@@ -102,9 +115,24 @@ impl TextCorrector {
 
         if corrected.is_empty() {
             warn!("BigModel 纠错返回空结果，回退原文");
+            println!(
+                "[Pipeline] llm_correction_complete model={} changed=false raw_chars={} corrected_chars={} vocab_count={}",
+                self.model,
+                raw_text.chars().count(),
+                raw_text.chars().count(),
+                self.vocabulary.len()
+            );
             return Ok(raw_text.to_string());
         }
 
+        println!(
+            "[Pipeline] llm_correction_complete model={} changed={} raw_chars={} corrected_chars={} vocab_count={}",
+            self.model,
+            corrected != raw_text,
+            raw_text.chars().count(),
+            corrected.chars().count(),
+            self.vocabulary.len()
+        );
         info!(
             "文本纠错完成: raw_chars={} corrected_chars={} vocab_count={}",
             raw_text.chars().count(),
@@ -112,6 +140,14 @@ impl TextCorrector {
             self.vocabulary.len()
         );
         Ok(corrected)
+    }
+
+    pub fn model_name(&self) -> &str {
+        &self.model
+    }
+
+    pub fn vocabulary_count(&self) -> usize {
+        self.vocabulary.len()
     }
 }
 

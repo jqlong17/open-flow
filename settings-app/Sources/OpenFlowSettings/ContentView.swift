@@ -682,7 +682,9 @@ struct ContentView: View {
         HStack(spacing: 14) {
             if showSaveConfirmation {
                 miniStatus(
-                    text: "Saved locally. Reopen the app if a setting needs a fresh daemon start.",
+                    text: config.daemonRunning
+                        ? "Saved locally. Restarting daemon so the new settings take effect."
+                        : "Saved locally. Launch Open Flow when you are ready to use the new settings.",
                     icon: "checkmark.circle.fill",
                     tint: Color(red: 0.24, green: 0.74, blue: 0.49)
                 )
@@ -716,9 +718,8 @@ struct ContentView: View {
 
     private func permissionSettingsRow(title: String, description: String, granted: Bool, action: @escaping () -> Void) -> some View {
         SettingsRow(label: title, description: description) {
-            if granted {
-                StatusPill(text: "Granted", tone: .success)
-            } else {
+            HStack(spacing: 10) {
+                StatusPill(text: granted ? "Granted" : "Needs Access", tone: granted ? .success : .warning)
                 SoftActionButton(
                     title: "Open Settings",
                     icon: "arrow.up.right.square",
@@ -866,6 +867,9 @@ struct ContentView: View {
     private func saveAllChanges() {
         config.save()
         config.savePersonalVocabulary()
+        if config.daemonRunning {
+            config.restartDaemon()
+        }
         withAnimation(.easeOut(duration: 0.2)) { showSaveConfirmation = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
             withAnimation(.easeIn(duration: 0.2)) { showSaveConfirmation = false }

@@ -24,6 +24,14 @@ pub enum DaemonEvent {
     HotkeyListenerDead,
 }
 
+struct CorrectionOutcome {
+    text: String,
+    attempted: bool,
+    changed: bool,
+    duration_ms: u64,
+    status: &'static str,
+}
+
 pub struct Daemon {
     state: Arc<Mutex<RecordingState>>,
     is_processing: AtomicBool,
@@ -45,6 +53,10 @@ pub struct Daemon {
     draft_live_last_tick: Mutex<std::time::Instant>,
     draft_live_text: Arc<Mutex<String>>,
     text_corrector: Option<TextCorrector>,
+    correction_config_enabled: bool,
+    correction_api_key_configured: bool,
+    correction_model_name: String,
+    correction_vocab_count: usize,
 }
 
 const MAX_RECORDING_DURATION_SECS: u64 = 2 * 60 * 60;
@@ -53,6 +65,20 @@ const TRANSCRIBE_SEGMENT_SECS: u64 = 60;
 const TRANSCRIBE_TIMEOUT_SECS: u64 = 120;
 
 impl Daemon {
+    fn personal_vocabulary_count() -> usize {
+        crate::common::config::Config::personal_vocabulary_path()
+            .ok()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|content| {
+                content
+                    .lines()
+                    .map(|line| line.trim())
+                    .filter(|line| !line.is_empty())
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     pub fn new(
         provider: Arc<dyn AsrProvider>,
         tray: Option<Arc<TrayHandle>>,
@@ -63,6 +89,20 @@ impl Daemon {
         let text_injector = TextInjector::new();
         let config = crate::common::config::Config::load().unwrap_or_default();
         let text_corrector = TextCorrector::from_config(&config);
+        let correction_config_enabled = config.correction_enabled();
+        let correction_api_key_configured = !config.resolved_correction_api_key().trim().is_empty();
+        let correction_model_name = config.resolved_correction_model();
+        let correction_vocab_count = Self::personal_vocabulary_count();
+
+        println!(
+            "[Pipeline] startup provider={} correction_config_enabled={} correction_runtime_enabled={} correction_api_key_configured={} correction_model={} vocabulary_terms={}",
+            provider.name(),
+            correction_config_enabled,
+            text_corrector.is_some(),
+            correction_api_key_configured,
+            correction_model_name,
+            correction_vocab_count
+        );
 
         Ok(Self {
             state: Arc::new(Mutex::new(RecordingState::default())),
@@ -85,6 +125,10 @@ impl Daemon {
             draft_live_last_tick: Mutex::new(std::time::Instant::now()),
             draft_live_text: Arc::new(Mutex::new(String::new())),
             text_corrector,
+            correction_config_enabled,
+            correction_api_key_configured,
+            correction_model_name,
+            correction_vocab_count,
         })
     }
 
@@ -605,7 +649,7 @@ impl Daemon {
             }
 
             let final_text = self.draft_live_text.lock().unwrap().trim().to_string();
-            let final_text = self.maybe_correct_text(final_text).await;
+            let correction = self.maybe_correct_text(final_text).await;
             let transcription_id = self.transcription_count.fetch_add(1, Ordering::SeqCst) + 1;
             self.log_memory_checkpoint(
                 "after_transcribe",
@@ -615,11 +659,22 @@ impl Daemon {
                     transcribe_started_at.elapsed().as_millis(),
                     buffer.len(),
                     tail.len(),
-                    final_text.chars().count(),
+                    correction.text.chars().count(),
                 )),
             );
+            println!(
+                "[Pipeline] transcription_complete provider={} asr_duration_ms={} llm_duration_ms={} total_pipeline_ms={} llm_attempted={} llm_changed={} llm_status={} final_chars={}",
+                self.provider.name(),
+                transcribe_started_at.elapsed().as_millis() as u64 - correction.duration_ms,
+                correction.duration_ms,
+                transcribe_started_at.elapsed().as_millis(),
+                correction.attempted,
+                correction.changed,
+                correction.status,
+                correction.text.chars().count()
+            );
 
-            tx.send(DaemonEvent::TranscriptionComplete(final_text))
+            tx.send(DaemonEvent::TranscriptionComplete(correction.text))
                 .await
                 .ok();
             return Ok(());
@@ -649,9 +704,21 @@ impl Daemon {
             )),
         );
 
-        let corrected_text = self.maybe_correct_text(result.text).await;
+        let asr_duration_ms = result.duration_ms;
+        let correction = self.maybe_correct_text(result.text).await;
+        println!(
+            "[Pipeline] transcription_complete provider={} asr_duration_ms={} llm_duration_ms={} total_pipeline_ms={} llm_attempted={} llm_changed={} llm_status={} final_chars={}",
+            self.provider.name(),
+            asr_duration_ms,
+            correction.duration_ms,
+            transcribe_started_at.elapsed().as_millis(),
+            correction.attempted,
+            correction.changed,
+            correction.status,
+            correction.text.chars().count()
+        );
 
-        tx.send(DaemonEvent::TranscriptionComplete(corrected_text))
+        tx.send(DaemonEvent::TranscriptionComplete(correction.text))
             .await
             .ok();
 
@@ -664,18 +731,36 @@ impl Daemon {
         audio: &[f32],
         sample_rate: u32,
     ) -> Result<TranscriptionResult> {
+        let provider_name = provider.name().to_string();
         let chunk_samples = (sample_rate as usize)
             .saturating_mul(TRANSCRIBE_SEGMENT_SECS as usize)
             .max(1);
 
         if audio.len() <= chunk_samples {
+            println!(
+                "[Pipeline] asr_start provider={} segmented=false sample_count={} sample_rate={} timeout_secs={}",
+                provider_name,
+                audio.len(),
+                sample_rate,
+                TRANSCRIBE_TIMEOUT_SECS
+            );
             return match tokio::time::timeout(
                 std::time::Duration::from_secs(TRANSCRIBE_TIMEOUT_SECS),
                 provider.transcribe(audio, sample_rate),
             )
             .await
             {
-                Ok(Ok(r)) => Ok(r),
+                Ok(Ok(r)) => {
+                    println!(
+                        "[Pipeline] asr_complete provider={} segmented=false text_chars={} confidence={:.3} language={} provider_duration_ms={}",
+                        provider_name,
+                        r.text.chars().count(),
+                        r.confidence,
+                        r.language.as_deref().unwrap_or("unknown"),
+                        r.duration_ms
+                    );
+                    Ok(r)
+                }
                 Ok(Err(e)) => Err(e),
                 Err(_elapsed) => {
                     anyhow::bail!(
@@ -687,6 +772,14 @@ impl Daemon {
         }
 
         let total_segments = (audio.len() + chunk_samples - 1) / chunk_samples;
+        println!(
+            "[Pipeline] asr_start provider={} segmented=true total_segments={} sample_count={} sample_rate={} timeout_secs={}",
+            provider_name,
+            total_segments,
+            audio.len(),
+            sample_rate,
+            TRANSCRIBE_TIMEOUT_SECS
+        );
         println!(
             "📦 检测到长录音，启用分段转写：{} 段（每段 {} 秒）",
             total_segments, TRANSCRIBE_SEGMENT_SECS
@@ -702,6 +795,13 @@ impl Daemon {
             let segment_no = idx + 1;
             println!(
                 "🧩 分段转写 {}/{}（{} 样本）",
+                segment_no,
+                total_segments,
+                chunk.len()
+            );
+            println!(
+                "[Pipeline] asr_segment_start provider={} segment={}/{} segment_sample_count={}",
+                provider_name,
                 segment_no,
                 total_segments,
                 chunk.len()
@@ -728,6 +828,17 @@ impl Daemon {
                 }
             };
 
+            println!(
+                "[Pipeline] asr_segment_complete provider={} segment={}/{} text_chars={} confidence={:.3} language={} provider_duration_ms={}",
+                provider_name,
+                segment_no,
+                total_segments,
+                segment.text.chars().count(),
+                segment.confidence,
+                segment.language.as_deref().unwrap_or("unknown"),
+                segment.duration_ms
+            );
+
             let trimmed = segment.text.trim();
             if !trimmed.is_empty() {
                 merged_texts.push(trimmed.to_string());
@@ -741,7 +852,7 @@ impl Daemon {
             }
         }
 
-        Ok(TranscriptionResult {
+        let merged = TranscriptionResult {
             text: merged_texts.join(" "),
             confidence: if confidence_count > 0 {
                 confidence_sum / confidence_count as f32
@@ -750,20 +861,91 @@ impl Daemon {
             },
             language,
             duration_ms: started_at.elapsed().as_millis() as u64,
-        })
-    }
-
-    async fn maybe_correct_text(&self, text: String) -> String {
-        let Some(corrector) = &self.text_corrector else {
-            return text;
         };
 
+        println!(
+            "[Pipeline] asr_complete provider={} segmented=true total_segments={} text_chars={} confidence={:.3} language={} provider_duration_ms={}",
+            provider_name,
+            total_segments,
+            merged.text.chars().count(),
+            merged.confidence,
+            merged.language.as_deref().unwrap_or("unknown"),
+            merged.duration_ms
+        );
+
+        Ok(merged)
+    }
+
+    async fn maybe_correct_text(&self, text: String) -> CorrectionOutcome {
+        let Some(corrector) = &self.text_corrector else {
+            let reason = if !self.correction_config_enabled {
+                "disabled_in_config"
+            } else if !self.correction_api_key_configured {
+                "missing_api_key"
+            } else {
+                "runtime_unavailable"
+            };
+            println!(
+                "[Pipeline] llm_correction_skip reason={} correction_config_enabled={} correction_api_key_configured={} correction_model={} vocabulary_terms={} raw_chars={}",
+                reason,
+                self.correction_config_enabled,
+                self.correction_api_key_configured,
+                self.correction_model_name,
+                self.correction_vocab_count,
+                text.chars().count()
+            );
+            return CorrectionOutcome {
+                text,
+                attempted: false,
+                changed: false,
+                duration_ms: 0,
+                status: reason,
+            };
+        };
+
+        let started_at = std::time::Instant::now();
         match corrector.correct(&text).await {
-            Ok(corrected) if !corrected.trim().is_empty() => corrected,
-            Ok(_) => text,
+            Ok(corrected) if !corrected.trim().is_empty() => CorrectionOutcome {
+                changed: corrected != text,
+                text: corrected,
+                attempted: true,
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                status: "completed",
+            },
+            Ok(_) => {
+                println!(
+                    "[Pipeline] llm_correction_complete model={} changed=false raw_chars={} corrected_chars={} vocab_count={} duration_ms={}",
+                    corrector.model_name(),
+                    text.chars().count(),
+                    text.chars().count(),
+                    corrector.vocabulary_count(),
+                    started_at.elapsed().as_millis()
+                );
+                CorrectionOutcome {
+                    text,
+                    attempted: true,
+                    changed: false,
+                    duration_ms: started_at.elapsed().as_millis() as u64,
+                    status: "empty_result_fallback",
+                }
+            }
             Err(err) => {
+                eprintln!(
+                    "[Pipeline] llm_correction_failed model={} raw_chars={} vocab_count={} duration_ms={} error={}",
+                    corrector.model_name(),
+                    text.chars().count(),
+                    corrector.vocabulary_count(),
+                    started_at.elapsed().as_millis(),
+                    err
+                );
                 eprintln!("⚠️  文本纠错失败，已回退原始转写: {}", err);
-                text
+                CorrectionOutcome {
+                    text,
+                    attempted: true,
+                    changed: false,
+                    duration_ms: started_at.elapsed().as_millis() as u64,
+                    status: "failed_fallback",
+                }
             }
         }
     }

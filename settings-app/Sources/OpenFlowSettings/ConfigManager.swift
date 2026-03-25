@@ -2,6 +2,18 @@ import Foundation
 import Combine
 import AppKit
 
+private struct PermissionSnapshot: Decodable {
+    let accessibility: Bool
+    let inputMonitoring: Bool
+    let microphone: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case accessibility
+        case inputMonitoring = "input_monitoring"
+        case microphone
+    }
+}
+
 /// Manages reading/writing Open Flow's config.toml and daemon lifecycle
 class ConfigManager: ObservableObject {
     // Config fields
@@ -100,15 +112,49 @@ class ConfigManager: ObservableObject {
 
     func refreshPermissions() {
         #if os(macOS)
-        let ax = checkAccessibility()
-        let im = checkInputMonitoring()
-        let mic = checkMicrophone()
-        DispatchQueue.main.async {
-            self.accessibilityGranted = ax
-            self.inputMonitoringGranted = im
-            self.microphoneGranted = mic
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+
+            let snapshot = self.fetchPermissionSnapshotFromOpenFlow()
+            let ax = snapshot?.accessibility ?? self.checkAccessibility()
+            let im = snapshot?.inputMonitoring ?? self.checkInputMonitoring()
+            let mic = snapshot?.microphone ?? self.checkMicrophone()
+
+            DispatchQueue.main.async {
+                self.accessibilityGranted = ax
+                self.inputMonitoringGranted = im
+                self.microphoneGranted = mic
+            }
         }
         #endif
+    }
+
+    private func fetchPermissionSnapshotFromOpenFlow() -> PermissionSnapshot? {
+        guard let binary = findOpenFlowBinary() else { return nil }
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: binary)
+        task.arguments = ["permissions", "--json"]
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        task.standardOutput = stdout
+        task.standardError = stderr
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        guard task.terminationStatus == 0 else {
+            return nil
+        }
+
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        guard !data.isEmpty else { return nil }
+        return try? JSONDecoder().decode(PermissionSnapshot.self, from: data)
     }
 
     private func checkAccessibility() -> Bool {
@@ -148,16 +194,44 @@ class ConfigManager: ObservableObject {
         return rawValue == 3
     }
 
+    private func openSystemSettings(candidates: [String]) {
+        let fallbackCandidates = candidates + [
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension",
+            "x-apple.systempreferences:com.apple.preference.security",
+        ]
+
+        for candidate in fallbackCandidates {
+            guard let url = URL(string: candidate) else { continue }
+            if NSWorkspace.shared.open(url) {
+                return
+            }
+        }
+
+        DispatchQueue.main.async {
+            self.lastError = "Failed to open System Settings automatically. Please open Privacy & Security manually."
+        }
+    }
+
     func openAccessibilitySettings() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+        openSystemSettings(candidates: [
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+        ])
     }
 
     func openMicrophoneSettings() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+        openSystemSettings(candidates: [
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+        ])
     }
 
     func openInputMonitoringSettings() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!)
+        openSystemSettings(candidates: [
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ListenEvent",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?InputAccessories",
+        ])
     }
 
     func copyModelPathToClipboard() {

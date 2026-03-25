@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use open_flow::model_store;
+use serde::Serialize;
 use std::fs;
 #[cfg(target_os = "macos")]
 use std::io::Write;
@@ -1085,6 +1086,38 @@ pub async fn stop() -> Result<()> {
 // ─────────────────────────────────────────────────────────────────────────────
 // status
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct PermissionSnapshot {
+    accessibility: bool,
+    input_monitoring: bool,
+    microphone: bool,
+    current_exe: String,
+}
+
+pub async fn permissions(json: bool) -> Result<()> {
+    let current_exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|e| format!("<unavailable: {e}>"));
+    let snapshot = PermissionSnapshot {
+        accessibility: crate::hotkey::check_accessibility_permission(),
+        input_monitoring: crate::hotkey::check_input_monitoring_permission(),
+        microphone: crate::hotkey::check_microphone_permission(),
+        current_exe,
+    };
+
+    if json {
+        println!("{}", serde_json::to_string(&snapshot)?);
+        return Ok(());
+    }
+
+    println!("Open Flow 权限状态");
+    println!("  可执行文件: {}", snapshot.current_exe);
+    println!("  Accessibility: {}", snapshot.accessibility);
+    println!("  Input Monitoring: {}", snapshot.input_monitoring);
+    println!("  Microphone: {}", snapshot.microphone);
+    Ok(())
+}
 
 pub async fn status() -> Result<()> {
     let config = Config::load()?;

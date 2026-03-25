@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# 一键发版：打 CLI tar.gz + .app zip，并创建 GitHub Release（仅 macOS）
+# 一键发版：使用当前 Mac 本机签名打包 CLI tar.gz + .app zip，并上传到 GitHub Release（仅 macOS）
 # 用法：先改 Cargo.toml version，commit 并 push，再执行 ./scripts/release.sh [可选：release notes]
 #
-# 若需要同时发布 macOS + Linux + Windows：先不要执行本脚本，改为只打 tag 并推送：
+# 若需要同时发布 macOS + Linux + Windows CLI：先打 tag 并推送：
 #   git tag vX.Y.Z && git push origin vX.Y.Z
-# 然后由 GitHub Actions（.github/workflows/release.yml）自动构建三端并创建 Release（macOS 含 .app，Linux/Windows 仅 CLI）。
+# 然后由 GitHub Actions（.github/workflows/release.yml）自动构建三端 CLI 并创建 Release。
+# macOS .app 请继续在本机执行本脚本上传，避免 CI 生成 ad-hoc 签名导致升级时重新请求权限。
 set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -26,6 +27,9 @@ else
 fi
 
 echo "Version: $VERSION | Tag: $TAG | Target: $TARGET"
+echo ""
+echo "This script publishes the macOS .app signed by the current machine."
+echo "Use a stable local signing identity to keep macOS permissions as consistent as possible."
 echo ""
 
 # 若 tag 不存在则创建并推送
@@ -72,12 +76,22 @@ if [[ -z "$RELEASE_NOTES" ]]; then
 fi
 
 echo ""
-echo "Creating GitHub Release $TAG..."
-gh release create "$TAG" \
-  "dist/open-flow-${TARGET}.tar.gz" \
-  "dist/${APP_ZIP}" \
-  --title "$TAG" \
-  --notes "$RELEASE_NOTES"
+echo "Uploading macOS artifacts to GitHub Release $TAG..."
+if gh release view "$TAG" >/dev/null 2>&1; then
+  gh release upload "$TAG" \
+    "dist/open-flow-${TARGET}.tar.gz" \
+    "dist/${APP_ZIP}" \
+    --clobber
+  if [[ -n "$RELEASE_NOTES" ]]; then
+    gh release edit "$TAG" --title "$TAG" --notes "$RELEASE_NOTES"
+  fi
+else
+  gh release create "$TAG" \
+    "dist/open-flow-${TARGET}.tar.gz" \
+    "dist/${APP_ZIP}" \
+    --title "$TAG" \
+    --notes "$RELEASE_NOTES"
+fi
 
 echo ""
 echo "Done. Release: https://github.com/jqlong17/open-flow/releases/tag/$TAG"

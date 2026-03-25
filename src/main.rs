@@ -144,6 +144,14 @@ enum Commands {
         command: ModelCommand,
     },
 
+    /// Print permission status for the current Open Flow binary
+    #[command(hide = true)]
+    Permissions {
+        /// Emit machine-readable JSON for the settings app
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Manually download the ASR model (手动下载模型，首次运行会自动触发无需手动执行)
     #[command(hide = true)]
     Setup {
@@ -265,6 +273,9 @@ async fn async_main(cmd: Commands) -> anyhow::Result<()> {
                 commands::model::list()?;
             }
         },
+        Commands::Permissions { json } => {
+            cli::daemon::permissions(json).await?;
+        }
         Commands::Setup { model_dir, force } => {
             commands::setup::run(model_dir, force).await?;
         }
