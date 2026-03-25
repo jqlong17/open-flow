@@ -20,3 +20,6 @@ export-full-model/
 
 # macOS
 .DS_Store
+
+# Local workflow notes (do not commit)
+workflow/
