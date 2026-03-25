@@ -55,7 +55,7 @@ echo "  -> dist/open-flow-${TARGET}.tar.gz"
 
 # 2) .app（调用 build-app.sh）
 echo ""
-"$REPO_ROOT/scripts/build-app.sh"
+OPENFLOW_PERF_DEV_UI=0 "$REPO_ROOT/scripts/build-app.sh"
 
 # 3) .app 打成 zip 供用户下载
 APP_ZIP="Open-Flow-${VERSION}-macos-${TARGET}.app.zip"

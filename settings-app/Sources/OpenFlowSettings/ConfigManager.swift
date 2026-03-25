@@ -28,6 +28,7 @@ class ConfigManager: ObservableObject {
     @Published var hotkey: String = "right_cmd"
     @Published var triggerMode: String = "toggle"
     @Published var chineseConversion: String = ""
+    @Published var performanceLogEnabled: String = ""
     @Published var modelPath: String = ""
 
     // Daemon status
@@ -278,6 +279,7 @@ class ConfigManager: ObservableObject {
             case "hotkey": hotkey = value
             case "trigger_mode": triggerMode = value
             case "chinese_conversion": chineseConversion = value
+            case "performance_log_enabled": performanceLogEnabled = value
             case "model_path": modelPath = value
             default: break
             }
@@ -307,6 +309,7 @@ class ConfigManager: ObservableObject {
             ("hotkey", hotkey),
             ("trigger_mode", triggerMode),
             ("chinese_conversion", chineseConversion),
+            ("performance_log_enabled", performanceLogEnabled),
             ("model_path", modelPath),
         ]
 
@@ -355,6 +358,15 @@ class ConfigManager: ObservableObject {
 
     func setCorrectionEnabled(_ enabled: Bool) {
         correctionEnabled = enabled ? "true" : "false"
+    }
+
+    var performanceLoggingIsEnabled: Bool {
+        let value = performanceLogEnabled.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return value == "true" || value == "1" || value == "yes" || value == "on" || value == "enabled"
+    }
+
+    func setPerformanceLoggingEnabled(_ enabled: Bool) {
+        performanceLogEnabled = enabled ? "true" : "false"
     }
 
     var personalVocabularyFileURL: URL {
@@ -916,4 +928,5 @@ class ConfigManager: ObservableObject {
 
     var configFileURL: URL { configPath }
     var logFileURL: URL { dataDir.appendingPathComponent("daemon.log") }
+    var performanceLogDirectoryURL: URL { dataDir.appendingPathComponent("performance") }
 }

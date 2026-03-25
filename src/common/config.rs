@@ -63,6 +63,8 @@ pub struct Config {
     pub trigger_mode: String,
     #[serde(default)]
     pub chinese_conversion: String,
+    #[serde(default)]
+    pub performance_log_enabled: String,
 }
 
 fn default_provider() -> String {
@@ -106,6 +108,7 @@ impl Default for Config {
             hotkey: default_hotkey(),
             trigger_mode: default_trigger_mode(),
             chinese_conversion: String::new(),
+            performance_log_enabled: String::new(),
         }
     }
 }
@@ -134,6 +137,16 @@ impl Config {
         } else {
             model.to_string()
         }
+    }
+
+    pub fn performance_log_enabled(&self) -> bool {
+        matches!(
+            self.performance_log_enabled
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "1" | "true" | "yes" | "on" | "enabled"
+        )
     }
 
     pub fn load() -> Result<Self> {

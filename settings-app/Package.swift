@@ -1,5 +1,8 @@
 // swift-tools-version: 5.9
+import Foundation
 import PackageDescription
+
+let perfDevUIEnabled = ProcessInfo.processInfo.environment["OPENFLOW_PERF_DEV_UI"] == "1"
 
 let package = Package(
     name: "OpenFlowSettings",
@@ -7,7 +10,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "OpenFlowSettings",
-            path: "Sources/OpenFlowSettings"
+            path: "Sources/OpenFlowSettings",
+            swiftSettings: perfDevUIEnabled ? [
+                .define("OPENFLOW_PERF_DEV_UI")
+            ] : []
         )
     ]
 )

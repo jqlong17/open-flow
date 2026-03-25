@@ -7,6 +7,10 @@ use tracing::info;
 use crate::asr::AsrProvider;
 use crate::audio::AudioCapture;
 use crate::common::memory;
+use crate::common::perf::{
+    empty_resource_snapshot, now_unix_ms, sample_process_resources, PerformanceLogEntry,
+    PerformanceLogWriter, ProcessResourceSnapshot, PERF_SCHEMA_VERSION,
+};
 use crate::common::types::{HotkeyEvent, RecordingState, TranscriptionResult};
 use crate::draft_panel::DraftPanelEvent;
 use crate::hotkey::{
@@ -20,8 +24,14 @@ use open_flow::correction::TextCorrector;
 #[derive(Debug)]
 pub enum DaemonEvent {
     Hotkey(HotkeyEvent),
-    TranscriptionComplete(String),
+    TranscriptionComplete(CompletedTranscription),
     HotkeyListenerDead,
+}
+
+#[derive(Debug)]
+pub(crate) struct CompletedTranscription {
+    text: String,
+    perf_entry: Option<PerformanceLogEntry>,
 }
 
 struct CorrectionOutcome {
@@ -30,6 +40,19 @@ struct CorrectionOutcome {
     changed: bool,
     duration_ms: u64,
     status: &'static str,
+}
+
+struct AsrExecutionSummary {
+    result: TranscriptionResult,
+    segmented: bool,
+    segment_count: usize,
+}
+
+#[derive(Clone, Copy)]
+struct ActivePerformanceSession {
+    session_id: u64,
+    started_at_ms: u64,
+    resource_at_record_start: ProcessResourceSnapshot,
 }
 
 pub struct Daemon {
@@ -45,6 +68,7 @@ pub struct Daemon {
     active_stream: Mutex<Option<cpal::Stream>>,
     recording_buffer: Mutex<Arc<Mutex<Vec<f32>>>>,
     tray: Option<Arc<TrayHandle>>,
+    hotkey: String,
     trigger_mode: String,
     draft_mode_active: Arc<AtomicBool>,
     draft_event_tx: Option<std::sync::mpsc::SyncSender<DraftPanelEvent>>,
@@ -57,6 +81,9 @@ pub struct Daemon {
     correction_api_key_configured: bool,
     correction_model_name: String,
     correction_vocab_count: usize,
+    performance_logger: PerformanceLogWriter,
+    performance_log_enabled: bool,
+    current_recording_session: Mutex<Option<ActivePerformanceSession>>,
 }
 
 const MAX_RECORDING_DURATION_SECS: u64 = 2 * 60 * 60;
@@ -93,15 +120,18 @@ impl Daemon {
         let correction_api_key_configured = !config.resolved_correction_api_key().trim().is_empty();
         let correction_model_name = config.resolved_correction_model();
         let correction_vocab_count = Self::personal_vocabulary_count();
+        let performance_logger = PerformanceLogWriter::from_config(&config)?;
+        let performance_log_enabled = performance_logger.enabled();
 
         println!(
-            "[Pipeline] startup provider={} correction_config_enabled={} correction_runtime_enabled={} correction_api_key_configured={} correction_model={} vocabulary_terms={}",
+            "[Pipeline] startup provider={} correction_config_enabled={} correction_runtime_enabled={} correction_api_key_configured={} correction_model={} vocabulary_terms={} performance_log_enabled={}",
             provider.name(),
             correction_config_enabled,
             text_corrector.is_some(),
             correction_api_key_configured,
             correction_model_name,
-            correction_vocab_count
+            correction_vocab_count,
+            performance_log_enabled
         );
 
         Ok(Self {
@@ -117,6 +147,7 @@ impl Daemon {
             active_stream: Mutex::new(None),
             recording_buffer: Mutex::new(Arc::new(Mutex::new(Vec::new()))),
             tray,
+            hotkey: config.hotkey.clone(),
             trigger_mode: config.trigger_mode,
             draft_mode_active,
             draft_event_tx,
@@ -129,6 +160,9 @@ impl Daemon {
             correction_api_key_configured,
             correction_model_name,
             correction_vocab_count,
+            performance_logger,
+            performance_log_enabled,
+            current_recording_session: Mutex::new(None),
         })
     }
 
@@ -247,21 +281,30 @@ impl Daemon {
                         DaemonEvent::Hotkey(ev) => {
                             self.handle_hotkey(ev, &event_tx).await;
                         }
-                        DaemonEvent::TranscriptionComplete(text) => {
+                        DaemonEvent::TranscriptionComplete(mut completed) => {
                             self.is_processing.store(false, Ordering::SeqCst);
                             self.set_tray(TrayIconState::Idle);
-                            println!("📝 转写完成: {}", text);
+                            println!("📝 转写完成: {}", completed.text);
+                            let output_started_at = std::time::Instant::now();
                             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                             if self.draft_mode_active.load(Ordering::SeqCst) {
                                 if let Some(ref tx) = self.draft_event_tx {
-                                    let _ = tx.try_send(DraftPanelEvent::SetText(text));
+                                    let _ = tx.try_send(DraftPanelEvent::SetText(completed.text.clone()));
                                 }
                             } else {
                                 info!("[Hotkey] 开始粘贴");
-                                if let Err(e) = self.text_injector.inject(&text).await {
+                                if let Err(e) = self.text_injector.inject(&completed.text).await {
                                     eprintln!("⚠️  文字注入失败: {e}");
                                 }
                                 info!("[Hotkey] 粘贴结束");
+                            }
+
+                            if let Some(ref mut perf_entry) = completed.perf_entry {
+                                perf_entry.output_duration_ms = output_started_at.elapsed().as_millis() as u64;
+                                perf_entry.total_e2e_ms =
+                                    perf_entry.total_e2e_ms.saturating_add(perf_entry.output_duration_ms);
+                                perf_entry.resource_after_pipeline = self.sample_resource_snapshot();
+                                self.write_performance_entry(perf_entry);
                             }
                         }
                         DaemonEvent::HotkeyListenerDead => {
@@ -526,6 +569,12 @@ impl Daemon {
         println!("[Daemon] start_recording state_updated");
 
         let session_id = self.recording_session_count.fetch_add(1, Ordering::SeqCst) + 1;
+        let performance_session = ActivePerformanceSession {
+            session_id,
+            started_at_ms: now_unix_ms(),
+            resource_at_record_start: self.sample_resource_snapshot(),
+        };
+        *self.current_recording_session.lock().unwrap() = Some(performance_session);
         println!(
             "[Daemon] start_recording session_id_assigned={}",
             session_id
@@ -557,6 +606,7 @@ impl Daemon {
 
         // 先拿走本次 session 的 Arc，再 drop stream
         // 这样即使旧 stream 有 stale 回调继续写入，也写入旧 Arc，不会影响下次 session
+        let perf_session = self.current_recording_session.lock().unwrap().take();
         let session_buf = self.recording_buffer.lock().unwrap().clone();
         drop(self.active_stream.lock().unwrap().take());
 
@@ -588,11 +638,52 @@ impl Daemon {
             buffer.len()
         );
 
+        let resource_after_record_stop = self.sample_resource_snapshot();
+
         if buffer.is_empty() {
             self.is_processing.store(false, Ordering::SeqCst);
+            self.emit_performance_log(PerformanceLogEntry {
+                    schema_version: PERF_SCHEMA_VERSION,
+                    app_version: env!("CARGO_PKG_VERSION").to_string(),
+                    created_at_ms: now_unix_ms(),
+                    session_id: perf_session.map(|s| s.session_id).unwrap_or(0),
+                    status: "empty_buffer".to_string(),
+                    provider: self.provider.name().to_string(),
+                    trigger_mode: self.trigger_mode.clone(),
+                    hotkey: self.hotkey.clone(),
+                    segmented: false,
+                    segment_count: 0,
+                    sample_rate: self.audio_capture.get_info().sample_rate,
+                    sample_count: 0,
+                    recording_duration_ms: duration.as_millis() as u64,
+                    asr_duration_ms: 0,
+                    llm_duration_ms: 0,
+                    total_pipeline_ms: 0,
+                    output_duration_ms: 0,
+                    total_e2e_ms: perf_session
+                        .map(|s| now_unix_ms().saturating_sub(s.started_at_ms))
+                        .unwrap_or(0),
+                    llm_attempted: false,
+                    llm_changed: false,
+                    llm_status: "skipped".to_string(),
+                    text_chars: 0,
+                    confidence: 0.0,
+                    language: None,
+                    max_amplitude: 0.0,
+                    rms: 0.0,
+                    error: Some("recording buffer was empty".to_string()),
+                    resource_at_record_start: perf_session
+                        .map(|s| s.resource_at_record_start)
+                        .unwrap_or_else(empty_resource_snapshot),
+                    resource_after_record_stop,
+                    resource_after_asr: empty_resource_snapshot(),
+                    resource_after_pipeline: empty_resource_snapshot(),
+                });
             eprintln!("⚠️  录音为空，请检查麦克风权限（系统设置 > 隐私与安全性 > 麦克风）");
             return Ok(());
         }
+
+        let sample_rate = self.audio_capture.get_info().sample_rate;
 
         // 振幅诊断：如果音量过低说明麦克风权限缺失或静音
         let max_amp = buffer.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
@@ -600,6 +691,43 @@ impl Daemon {
         info!("[Audio] max_amp={:.6} rms={:.6}", max_amp, rms);
         if max_amp < 0.001 {
             self.is_processing.store(false, Ordering::SeqCst);
+            self.emit_performance_log(PerformanceLogEntry {
+                    schema_version: PERF_SCHEMA_VERSION,
+                    app_version: env!("CARGO_PKG_VERSION").to_string(),
+                    created_at_ms: now_unix_ms(),
+                    session_id: perf_session.map(|s| s.session_id).unwrap_or(0),
+                    status: "low_amplitude".to_string(),
+                    provider: self.provider.name().to_string(),
+                    trigger_mode: self.trigger_mode.clone(),
+                    hotkey: self.hotkey.clone(),
+                    segmented: false,
+                    segment_count: 0,
+                    sample_rate,
+                    sample_count: buffer.len(),
+                    recording_duration_ms: duration.as_millis() as u64,
+                    asr_duration_ms: 0,
+                    llm_duration_ms: 0,
+                    total_pipeline_ms: 0,
+                    output_duration_ms: 0,
+                    total_e2e_ms: perf_session
+                        .map(|s| now_unix_ms().saturating_sub(s.started_at_ms))
+                        .unwrap_or(0),
+                    llm_attempted: false,
+                    llm_changed: false,
+                    llm_status: "skipped".to_string(),
+                    text_chars: 0,
+                    confidence: 0.0,
+                    language: None,
+                    max_amplitude: max_amp,
+                    rms,
+                    error: Some(format!("audio amplitude too low: max_amp={max_amp:.6}")),
+                    resource_at_record_start: perf_session
+                        .map(|s| s.resource_at_record_start)
+                        .unwrap_or_else(empty_resource_snapshot),
+                    resource_after_record_stop,
+                    resource_after_asr: empty_resource_snapshot(),
+                    resource_after_pipeline: empty_resource_snapshot(),
+                });
             eprintln!("⚠️  录音振幅极低（max={:.6}），麦克风可能未授权。", max_amp);
             eprintln!(
                 "   请前往：系统设置 > 隐私与安全性 > 麦克风，将 Open Flow.app 添加到列表并启用。"
@@ -608,7 +736,6 @@ impl Daemon {
             return Ok(());
         }
 
-        let sample_rate = self.audio_capture.get_info().sample_rate;
         let provider = self.provider.clone();
         let transcribe_started_at = std::time::Instant::now();
 
@@ -625,11 +752,21 @@ impl Daemon {
                 .load(Ordering::SeqCst)
                 .min(buffer.len());
             let tail = &buffer[cursor..];
+            let mut asr_summary = AsrExecutionSummary {
+                result: TranscriptionResult {
+                    text: String::new(),
+                    confidence: 0.0,
+                    language: None,
+                    duration_ms: 0,
+                },
+                segmented: false,
+                segment_count: 0,
+            };
             if !tail.is_empty() {
-                let tail_result = self
+                asr_summary = self
                     .transcribe_with_segments(provider.clone(), tail, sample_rate)
                     .await?;
-                let tail_text = tail_result.text.trim().to_string();
+                let tail_text = asr_summary.result.text.trim().to_string();
 
                 if !tail_text.is_empty() {
                     {
@@ -650,6 +787,7 @@ impl Daemon {
 
             let final_text = self.draft_live_text.lock().unwrap().trim().to_string();
             let correction = self.maybe_correct_text(final_text).await;
+            let resource_after_pipeline = self.sample_resource_snapshot();
             let transcription_id = self.transcription_count.fetch_add(1, Ordering::SeqCst) + 1;
             self.log_memory_checkpoint(
                 "after_transcribe",
@@ -665,7 +803,7 @@ impl Daemon {
             println!(
                 "[Pipeline] transcription_complete provider={} asr_duration_ms={} llm_duration_ms={} total_pipeline_ms={} llm_attempted={} llm_changed={} llm_status={} final_chars={}",
                 self.provider.name(),
-                transcribe_started_at.elapsed().as_millis() as u64 - correction.duration_ms,
+                asr_summary.result.duration_ms,
                 correction.duration_ms,
                 transcribe_started_at.elapsed().as_millis(),
                 correction.attempted,
@@ -674,7 +812,27 @@ impl Daemon {
                 correction.text.chars().count()
             );
 
-            tx.send(DaemonEvent::TranscriptionComplete(correction.text))
+            let perf_entry = self.build_performance_entry(
+                perf_session,
+                "completed",
+                duration.as_millis() as u64,
+                sample_rate,
+                buffer.len(),
+                max_amp,
+                rms,
+                &asr_summary,
+                &correction,
+                resource_after_record_stop,
+                self.sample_resource_snapshot(),
+                resource_after_pipeline,
+                correction.text.chars().count(),
+                None,
+            );
+
+            tx.send(DaemonEvent::TranscriptionComplete(CompletedTranscription {
+                text: correction.text,
+                perf_entry,
+            }))
                 .await
                 .ok();
             return Ok(());
@@ -687,6 +845,40 @@ impl Daemon {
             Ok(r) => r,
             Err(e) => {
                 self.is_processing.store(false, Ordering::SeqCst);
+                let error_string = e.to_string();
+                if let Some(entry) = self.build_performance_entry(
+                        perf_session,
+                        "asr_failed",
+                        duration.as_millis() as u64,
+                        sample_rate,
+                        buffer.len(),
+                        max_amp,
+                        rms,
+                        &AsrExecutionSummary {
+                            result: TranscriptionResult {
+                                text: String::new(),
+                                confidence: 0.0,
+                                language: None,
+                                duration_ms: transcribe_started_at.elapsed().as_millis() as u64,
+                            },
+                            segmented: false,
+                            segment_count: 0,
+                        },
+                        &CorrectionOutcome {
+                            text: String::new(),
+                            attempted: false,
+                            changed: false,
+                            duration_ms: 0,
+                            status: "skipped",
+                        },
+                        resource_after_record_stop,
+                        self.sample_resource_snapshot(),
+                        self.sample_resource_snapshot(),
+                        0,
+                        Some(error_string),
+                    ) {
+                    self.emit_performance_log(entry);
+                }
                 return Err(e);
             }
         };
@@ -699,13 +891,16 @@ impl Daemon {
                 transcription_id,
                 transcribe_started_at.elapsed().as_millis(),
                 buffer.len(),
-                result.text.chars().count(),
-                result.duration_ms,
+                result.result.text.chars().count(),
+                result.result.duration_ms,
             )),
         );
 
-        let asr_duration_ms = result.duration_ms;
-        let correction = self.maybe_correct_text(result.text).await;
+        let resource_after_asr = self.sample_resource_snapshot();
+        let asr_duration_ms = result.result.duration_ms;
+        let raw_text = result.result.text.clone();
+        let correction = self.maybe_correct_text(raw_text).await;
+        let resource_after_pipeline = self.sample_resource_snapshot();
         println!(
             "[Pipeline] transcription_complete provider={} asr_duration_ms={} llm_duration_ms={} total_pipeline_ms={} llm_attempted={} llm_changed={} llm_status={} final_chars={}",
             self.provider.name(),
@@ -718,7 +913,27 @@ impl Daemon {
             correction.text.chars().count()
         );
 
-        tx.send(DaemonEvent::TranscriptionComplete(correction.text))
+        let perf_entry = self.build_performance_entry(
+            perf_session,
+            "completed",
+            duration.as_millis() as u64,
+            sample_rate,
+            buffer.len(),
+            max_amp,
+            rms,
+            &result,
+            &correction,
+            resource_after_record_stop,
+            resource_after_asr,
+            resource_after_pipeline,
+            correction.text.chars().count(),
+            None,
+        );
+
+        tx.send(DaemonEvent::TranscriptionComplete(CompletedTranscription {
+            text: correction.text,
+            perf_entry,
+        }))
             .await
             .ok();
 
@@ -730,7 +945,7 @@ impl Daemon {
         provider: Arc<dyn AsrProvider>,
         audio: &[f32],
         sample_rate: u32,
-    ) -> Result<TranscriptionResult> {
+    ) -> Result<AsrExecutionSummary> {
         let provider_name = provider.name().to_string();
         let chunk_samples = (sample_rate as usize)
             .saturating_mul(TRANSCRIBE_SEGMENT_SECS as usize)
@@ -759,7 +974,11 @@ impl Daemon {
                         r.language.as_deref().unwrap_or("unknown"),
                         r.duration_ms
                     );
-                    Ok(r)
+                    Ok(AsrExecutionSummary {
+                        result: r,
+                        segmented: false,
+                        segment_count: 1,
+                    })
                 }
                 Ok(Err(e)) => Err(e),
                 Err(_elapsed) => {
@@ -873,7 +1092,11 @@ impl Daemon {
             merged.duration_ms
         );
 
-        Ok(merged)
+        Ok(AsrExecutionSummary {
+            result: merged,
+            segmented: true,
+            segment_count: total_segments,
+        })
     }
 
     async fn maybe_correct_text(&self, text: String) -> CorrectionOutcome {
@@ -947,6 +1170,91 @@ impl Daemon {
                     status: "failed_fallback",
                 }
             }
+        }
+    }
+
+    fn sample_resource_snapshot(&self) -> ProcessResourceSnapshot {
+        sample_process_resources().unwrap_or_else(empty_resource_snapshot)
+    }
+
+    fn build_performance_entry(
+        &self,
+        perf_session: Option<ActivePerformanceSession>,
+        status: &str,
+        recording_duration_ms: u64,
+        sample_rate: u32,
+        sample_count: usize,
+        max_amplitude: f32,
+        rms: f32,
+        asr_summary: &AsrExecutionSummary,
+        correction: &CorrectionOutcome,
+        resource_after_record_stop: ProcessResourceSnapshot,
+        resource_after_asr: ProcessResourceSnapshot,
+        resource_after_pipeline: ProcessResourceSnapshot,
+        text_chars: usize,
+        error: Option<String>,
+    ) -> Option<PerformanceLogEntry> {
+        if !self.performance_log_enabled {
+            return None;
+        }
+
+        let now_ms = now_unix_ms();
+        let started_at_ms = perf_session.map(|s| s.started_at_ms).unwrap_or(now_ms);
+        Some(PerformanceLogEntry {
+            schema_version: PERF_SCHEMA_VERSION,
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            created_at_ms: now_ms,
+            session_id: perf_session.map(|s| s.session_id).unwrap_or(0),
+            status: status.to_string(),
+            provider: self.provider.name().to_string(),
+            trigger_mode: self.trigger_mode.clone(),
+            hotkey: self.hotkey.clone(),
+            segmented: asr_summary.segmented,
+            segment_count: asr_summary.segment_count,
+            sample_rate,
+            sample_count,
+            recording_duration_ms,
+            asr_duration_ms: asr_summary.result.duration_ms,
+            llm_duration_ms: correction.duration_ms,
+            total_pipeline_ms: asr_summary.result.duration_ms.saturating_add(correction.duration_ms),
+            output_duration_ms: 0,
+            total_e2e_ms: now_ms.saturating_sub(started_at_ms),
+            llm_attempted: correction.attempted,
+            llm_changed: correction.changed,
+            llm_status: correction.status.to_string(),
+            text_chars,
+            confidence: asr_summary.result.confidence,
+            language: asr_summary.result.language.clone(),
+            max_amplitude,
+            rms,
+            error,
+            resource_at_record_start: perf_session
+                .map(|s| s.resource_at_record_start)
+                .unwrap_or_else(empty_resource_snapshot),
+            resource_after_record_stop,
+            resource_after_asr,
+            resource_after_pipeline,
+        })
+    }
+
+    fn emit_performance_log(&self, entry: PerformanceLogEntry) {
+        self.write_performance_entry(&entry);
+    }
+
+    fn write_performance_entry(&self, entry: &PerformanceLogEntry) {
+        if let Err(err) = self.performance_logger.write_entry(entry) {
+            eprintln!(
+                "[Performance] failed_to_persist session_id={} error={}",
+                entry.session_id, err
+            );
+        } else {
+            println!(
+                "[Performance] persisted session_id={} status={} total_e2e_ms={} file_dir={}",
+                entry.session_id,
+                entry.status,
+                entry.total_e2e_ms,
+                self.performance_logger.directory().display()
+            );
         }
     }
 

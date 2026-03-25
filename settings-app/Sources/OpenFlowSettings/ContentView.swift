@@ -607,6 +607,28 @@ struct ContentView: View {
 
     private var diagnosticsPage: some View {
         VStack(alignment: .leading, spacing: pageSpacing) {
+            #if OPENFLOW_PERF_DEV_UI
+            SettingsCard(title: "Performance Logging", subtitle: "Persist session-level timing and process resource snapshots so we can profile the voice pipeline over time.") {
+                VStack(spacing: 0) {
+                    SettingsRow(label: "Performance mode", description: "When enabled, Open Flow writes JSONL performance logs with end-to-end timing, CPU, and memory checkpoints.") {
+                        Toggle("", isOn: performanceLoggingEnabledBinding)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                    }
+
+                    rowDivider
+                    SettingsRow(label: "Log location", description: "Stored separately from daemon.log so performance analysis stays easy to filter and archive.") {
+                        HStack(spacing: 8) {
+                            valueCapsule(config.performanceLogDirectoryURL.path)
+                            subtleAction(title: "Open Folder", icon: "folder") {
+                                NSWorkspace.shared.open(config.performanceLogDirectoryURL)
+                            }
+                        }
+                    }
+                }
+            }
+            #endif
+
             SettingsCard(title: "Hotkey Test", subtitle: "Listen for modifier changes and confirm the system sees the hotkey you want to use.") {
                 VStack(spacing: 0) {
                     SettingsRow(label: "Listener", description: "Start monitoring and press Fn or your configured key to see raw event details.") {
@@ -881,6 +903,20 @@ struct ContentView: View {
             get: { config.correctionIsEnabled },
             set: { config.setCorrectionEnabled($0) }
         )
+    }
+
+    private var performanceLoggingEnabledBinding: Binding<Bool> {
+        #if OPENFLOW_PERF_DEV_UI
+        Binding(
+            get: { config.performanceLoggingIsEnabled },
+            set: { config.setPerformanceLoggingEnabled($0) }
+        )
+        #else
+        Binding(
+            get: { false },
+            set: { _ in }
+        )
+        #endif
     }
 
     private var modelPathActions: some View {

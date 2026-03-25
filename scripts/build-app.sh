@@ -23,6 +23,11 @@ cargo build --release
 
 echo "Building settings app..."
 cd "$REPO_ROOT/settings-app"
+if [[ "${OPENFLOW_PERF_DEV_UI:-0}" == "1" ]]; then
+  echo "Developer performance UI: ENABLED"
+else
+  echo "Developer performance UI: disabled (default for distributable app builds)"
+fi
 swift build -c release
 SETTINGS_BIN_DIR="$(swift build -c release --show-bin-path)"
 cd "$REPO_ROOT"
