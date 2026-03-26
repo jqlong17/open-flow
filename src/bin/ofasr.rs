@@ -86,7 +86,7 @@ struct CheckOutput {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    let _ = open_flow::common::logging::init_tracing("ofasr")?;
 
     match Cli::parse().command {
         Commands::Transcribe { file, model, json } => transcribe(file, model, json).await,

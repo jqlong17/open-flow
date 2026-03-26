@@ -124,7 +124,23 @@ Run in **PowerShell** (downloads and extracts to `%LOCALAPPDATA%\Programs\open-f
 $url = "https://github.com/jqlong17/open-flow/releases/latest/download/open-flow-x86_64-pc-windows-msvc.zip"; $dir = "$env:LOCALAPPDATA\Programs\open-flow"; New-Item -ItemType Directory -Force -Path $dir | Out-Null; Invoke-WebRequest -Uri $url -OutFile "$dir\open-flow.zip" -UseBasicParsing; Expand-Archive -Path "$dir\open-flow.zip" -DestinationPath $dir -Force; Remove-Item "$dir\open-flow.zip"; $path = [Environment]::GetEnvironmentVariable("Path", "User"); if ($path -notlike "*$dir*") { [Environment]::SetEnvironmentVariable("Path", "$path;$dir", "User"); Write-Host "Added $dir to PATH." }; $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine"); Write-Host "Done. In this window run: open-flow.exe start --foreground"
 ```
 
-You can run `open-flow.exe start --foreground` in the same window right away; new terminals will also find the command. First run downloads ~230MB model. Hotkey: **Right Alt key**; result in clipboard, **Ctrl+V** to paste.
+You can run `open-flow.exe start --foreground` in the same window right away; new terminals will also find the command. First run downloads ~230MB model. On Windows the default hotkey is **Right Win** (older configs are auto-migrated for compatibility), and you can switch it to **Right Alt** if preferred. Results go to the clipboard; press **Ctrl+V** to paste.
+
+**Windows / Linux troubleshooting**
+
+If startup, hotkey, recording, or audio device detection fails, run:
+
+```bash
+open-flow support
+```
+
+or on Windows:
+
+```powershell
+.\open-flow.exe support
+```
+
+This prints the executable path, config path, input-device snapshot, and the tail of `daemon.log`. Sending that output to the maintainer makes remote debugging much easier. Issues are welcome, and PRs to improve the Windows / Linux experience are especially appreciated.
 
 **Build from source** (install [Rust](https://rustup.rs/) first)
 

@@ -274,9 +274,50 @@ impl HotkeyListener {
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn run_listen_loop_rdev(sender: Sender<HotkeyEvent>, _hotkey: &str) -> Result<()> {
+    fn run_listen_loop_rdev(sender: Sender<HotkeyEvent>, hotkey: &str) -> Result<()> {
         use rdev::{listen, Event, EventType, Key};
         use std::sync::atomic::{AtomicBool, AtomicU64};
+
+        #[derive(Clone, Copy)]
+        struct RdevHotkey {
+            key: Key,
+            label: &'static str,
+            log_key: &'static str,
+        }
+
+        let hotkey_spec = {
+            #[cfg(target_os = "windows")]
+            {
+                match hotkey.trim().to_ascii_lowercase().as_str() {
+                    "right_alt" | "altgr" => RdevHotkey {
+                        key: Key::AltGr,
+                        label: "Right Alt",
+                        log_key: "right_alt",
+                    },
+                    _ => RdevHotkey {
+                        key: Key::MetaRight,
+                        label: "Right Win",
+                        log_key: "right_win",
+                    },
+                }
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                match hotkey.trim().to_ascii_lowercase().as_str() {
+                    "right_win" | "right_meta" | "meta_right" => RdevHotkey {
+                        key: Key::MetaRight,
+                        label: "Right Meta",
+                        log_key: "right_win",
+                    },
+                    _ => RdevHotkey {
+                        key: Key::AltGr,
+                        label: "Right Alt",
+                        log_key: "right_alt",
+                    },
+                }
+            }
+        };
 
         let pressed = Arc::new(AtomicBool::new(false));
         let pressed_clone = pressed.clone();
@@ -285,33 +326,35 @@ impl HotkeyListener {
         let pc = press_count.clone();
         let rc = release_count.clone();
 
-        println!("⌨️  热键监听器已启动（rdev）");
+        println!("⌨️  热键监听器已启动（rdev，热键: {}）", hotkey_spec.label);
 
-        // Windows / Linux: 右侧 Alt（AltGr）；与 macOS 右 Command 区分
         let result = listen(move |event: Event| match event.event_type {
-            EventType::KeyPress(Key::MetaRight) => {
+            EventType::KeyPress(key) if key == hotkey_spec.key => {
                 let was = pressed_clone.swap(true, Ordering::SeqCst);
                 if !was {
                     let n = pc.fetch_add(1, Ordering::SeqCst) + 1;
-                    println!("[Hotkey] raw_event press={} key=meta_right", n);
+                    println!("[Hotkey] raw_event press={} key={}", n, hotkey_spec.log_key);
                     if let Err(e) = sender.send(HotkeyEvent::Pressed) {
                         eprintln!(
-                            "[Hotkey] send_failed key=meta_right event=Pressed error={}",
-                            e
+                            "[Hotkey] send_failed key={} event=Pressed error={}",
+                            hotkey_spec.log_key, e
                         );
                         error!("发送热键事件失败: {}", e);
                     }
                 }
             }
-            EventType::KeyRelease(Key::MetaRight) => {
+            EventType::KeyRelease(key) if key == hotkey_spec.key => {
                 let was = pressed_clone.swap(false, Ordering::SeqCst);
                 if was {
                     let n = rc.fetch_add(1, Ordering::SeqCst) + 1;
-                    println!("[Hotkey] raw_event release={} key=meta_right", n);
+                    println!(
+                        "[Hotkey] raw_event release={} key={}",
+                        n, hotkey_spec.log_key
+                    );
                     if let Err(e) = sender.send(HotkeyEvent::Released) {
                         eprintln!(
-                            "[Hotkey] send_failed key=meta_right event=Released error={}",
-                            e
+                            "[Hotkey] send_failed key={} event=Released error={}",
+                            hotkey_spec.log_key, e
                         );
                         error!("发送热键事件失败: {}", e);
                     }

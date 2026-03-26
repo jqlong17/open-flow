@@ -9,7 +9,17 @@ fn simulate_hotkey() -> Result<()> {
     use rdev::{simulate, EventType, Key};
     let delay = Duration::from_millis(25);
     #[cfg(any(target_os = "windows", target_os = "linux"))]
-    let key = Key::AltGr;
+    let config = crate::common::config::Config::load().unwrap_or_default();
+    #[cfg(target_os = "windows")]
+    let key = match config.hotkey.as_str() {
+        "right_alt" => Key::AltGr,
+        _ => Key::MetaRight,
+    };
+    #[cfg(target_os = "linux")]
+    let key = match config.hotkey.as_str() {
+        "right_win" => Key::MetaRight,
+        _ => Key::AltGr,
+    };
     #[cfg(target_os = "macos")]
     let key = Key::MetaRight;
     simulate(&EventType::KeyPress(key)).map_err(|e| anyhow::anyhow!("模拟按下失败: {:?}", e))?;

@@ -92,7 +92,20 @@ fn default_correction_model() -> String {
     "GLM-4.7-Flash".into()
 }
 fn default_hotkey() -> String {
-    "right_cmd".into()
+    #[cfg(target_os = "macos")]
+    {
+        return "right_cmd".into();
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return "right_win".into();
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        "right_alt".into()
+    }
 }
 fn default_trigger_mode() -> String {
     "toggle".into()
@@ -221,6 +234,8 @@ impl Config {
             config.model_path = None;
         }
 
+        config.hotkey = normalize_hotkey_for_platform(&config.hotkey);
+
         Ok(config)
     }
 
@@ -265,5 +280,38 @@ impl Config {
     pub fn set_model_preset(&mut self, preset: ModelPreset) -> Result<()> {
         self.model_preset = Some(preset.as_str().to_string());
         self.save()
+    }
+}
+
+fn normalize_hotkey_for_platform(hotkey: &str) -> String {
+    let normalized = hotkey.trim().to_ascii_lowercase();
+
+    #[cfg(target_os = "macos")]
+    {
+        if normalized.is_empty() {
+            return default_hotkey();
+        }
+        return normalized;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return match normalized.as_str() {
+            "" => default_hotkey(),
+            "right_cmd" | "right_meta" | "meta_right" | "win" | "right_win" => {
+                "right_win".to_string()
+            }
+            "right_alt" | "altgr" => "right_alt".to_string(),
+            other => other.to_string(),
+        };
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        match normalized.as_str() {
+            "" => default_hotkey(),
+            "right_cmd" | "right_alt" | "altgr" => "right_alt".to_string(),
+            other => other.to_string(),
+        }
     }
 }

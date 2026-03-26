@@ -79,7 +79,7 @@ pub struct Daemon {
     recording_session_count: std::sync::atomic::AtomicU64,
     transcription_count: std::sync::atomic::AtomicU64,
     recording_warning_issued: AtomicBool,
-    audio_capture: Option<AudioCapture>,
+    audio_capture: Mutex<Option<AudioCapture>>,
     provider: Arc<dyn AsrProvider>,
     text_injector: TextInjector,
     active_stream: Mutex<Option<cpal::Stream>>,
@@ -157,22 +157,10 @@ impl Daemon {
     ) -> Result<Self> {
         let config = crate::common::config::Config::load().unwrap_or_default();
         let capture_mode = config.resolved_capture_mode();
-        let uses_microphone = matches!(
-            capture_mode.as_str(),
-            "microphone" | "system_audio_microphone"
-        );
         let uses_system_audio = matches!(
             capture_mode.as_str(),
             "system_audio_desktop" | "system_audio_application" | "system_audio_microphone"
         );
-        let audio_capture = if uses_microphone {
-            Some(
-                AudioCapture::new_with_device_name(config.resolved_input_source().as_deref())
-                    .context("初始化音频采集器失败")?,
-            )
-        } else {
-            None
-        };
         if uses_system_audio && !SystemAudioCapture::helper_available() {
             anyhow::bail!("系统音频 helper 不可用，请先构建或重新打包 Open Flow.app");
         }
@@ -212,7 +200,7 @@ impl Daemon {
             recording_session_count: std::sync::atomic::AtomicU64::new(0),
             transcription_count: std::sync::atomic::AtomicU64::new(0),
             recording_warning_issued: AtomicBool::new(false),
-            audio_capture,
+            audio_capture: Mutex::new(None),
             provider,
             text_injector,
             active_stream: Mutex::new(None),
@@ -443,6 +431,13 @@ impl Daemon {
         println!();
         println!("{}", ui.pick("🎙️  按热键开始录音，再按一次停止并转写", "🎙️  Press the hotkey to start recording, then press it again to stop and transcribe"));
         println!("{}", ui.pick("   托盘图标可查看状态（灰=待机 红=录音 黄=转写）", "   Check the tray icon for status (gray = idle, red = recording, yellow = transcribing)"));
+        println!(
+            "{}",
+            ui.pick(
+                "   如需远程排障，可运行 `open-flow support` 并把输出发给维护者。",
+                "   For remote troubleshooting, run `open-flow support` and send the output to the maintainer.",
+            )
+        );
         println!();
 
         // ── 主事件循环 ────────────────────────────────────────────────
@@ -889,8 +884,11 @@ impl Daemon {
 
         match self.capture_mode.as_str() {
             "microphone" => {
+                self.ensure_microphone_capture()?;
                 let stream = self
                     .audio_capture
+                    .lock()
+                    .unwrap()
                     .as_ref()
                     .context("麦克风模式下音频采集器未初始化")?
                     .build_live_stream(session_buf.clone())
@@ -914,6 +912,7 @@ impl Daemon {
                 *self.system_audio_recording_buffer.lock().unwrap() = Some(session_buf.clone());
             }
             "system_audio_microphone" => {
+                self.ensure_microphone_capture()?;
                 let microphone_buf = microphone_buf
                     .clone()
                     .context("会议双路模式下麦克风缓冲区未初始化")?;
@@ -923,6 +922,8 @@ impl Daemon {
 
                 let stream = self
                     .audio_capture
+                    .lock()
+                    .unwrap()
                     .as_ref()
                     .context("会议双路模式下麦克风采集器未初始化")?
                     .build_live_stream(microphone_buf.clone())
@@ -2165,7 +2166,11 @@ impl Daemon {
     }
 
     fn microphone_audio_info(&self) -> Option<crate::audio::AudioInfo> {
-        self.audio_capture.as_ref().map(|audio_capture| audio_capture.get_info())
+        self.audio_capture
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|audio_capture| audio_capture.get_info())
     }
 
     fn system_audio_info(&self) -> Option<crate::audio::AudioInfo> {
@@ -2197,7 +2202,7 @@ impl Daemon {
             };
         }
 
-        if let Some(audio_capture) = &self.audio_capture {
+        if let Some(audio_capture) = self.audio_capture.lock().unwrap().as_ref() {
             audio_capture.get_info()
         } else {
             self.system_audio_info().unwrap_or(crate::audio::AudioInfo {
@@ -2207,6 +2212,70 @@ impl Daemon {
                 sample_format: "F32".to_string(),
             })
         }
+    }
+
+    fn ensure_microphone_capture(&self) -> Result<()> {
+        if !self.uses_microphone_capture() {
+            return Ok(());
+        }
+
+        {
+            let guard = self.audio_capture.lock().unwrap();
+            if guard.is_some() {
+                return Ok(());
+            }
+        }
+
+        let config = crate::common::config::Config::load().unwrap_or_default();
+        let requested_input_source = config.resolved_input_source();
+        let capture = AudioCapture::new_with_device_name(requested_input_source.as_deref())
+            .map_err(|err| {
+                let device_snapshot = crate::audio::list_input_devices().ok();
+                let default_device = device_snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.default_device_name.clone())
+                    .unwrap_or_else(|| "<none>".to_string());
+                let available_devices = device_snapshot
+                    .map(|snapshot| {
+                        if snapshot.devices.is_empty() {
+                            "<none>".to_string()
+                        } else {
+                            snapshot
+                                .devices
+                                .into_iter()
+                                .map(|device| {
+                                    if device.is_default {
+                                        format!("{} (default)", device.name)
+                                    } else {
+                                        device.name
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        }
+                    })
+                    .unwrap_or_else(|| "<unavailable>".to_string());
+
+                anyhow::anyhow!(
+                    "初始化音频采集器失败: {err}\n\
+                     当前录音模式: {}\n\
+                     配置输入设备: {}\n\
+                     系统默认输入设备: {}\n\
+                     可用输入设备: {}\n\
+                     建议先运行 `open-flow audio-devices` 检查麦克风枚举结果，并确认 Windows 设置 > 系统 > 声音 中至少存在一个可用输入设备。",
+                    self.capture_mode,
+                    requested_input_source.as_deref().unwrap_or("<system_default>"),
+                    default_device,
+                    available_devices,
+                )
+            })?;
+
+        let mut guard = self.audio_capture.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(capture);
+        }
+
+        Ok(())
     }
 
     fn log_memory_checkpoint(&self, checkpoint: &str, extra: Option<String>) {

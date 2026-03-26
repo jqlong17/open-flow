@@ -37,6 +37,16 @@ fn is_app_bundle_launch() -> bool {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn is_windows_direct_launch() -> bool {
+    std::env::args_os().nth(1).is_none()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_windows_direct_launch() -> bool {
+    false
+}
+
 fn log_launch_context(app_bundle_launch: bool) {
     let current_exe = std::env::current_exe()
         .map(|p| p.display().to_string())
@@ -171,6 +181,14 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
     },
+
+    /// Print a support bundle for remote troubleshooting
+    #[command(hide = true)]
+    Support {
+        /// Number of log lines to include from the tail of daemon.log
+        #[arg(long, default_value = "200")]
+        tail_lines: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -205,13 +223,19 @@ fn main() -> anyhow::Result<()> {
         redirect_app_bundle_stdio_to_log();
     }
 
-    tracing_subscriber::fmt::init();
+    let tracing_log_path = common::logging::init_tracing("open-flow")?;
     log_launch_context(app_bundle_launch);
+    info!("Tracing log file: {}", tracing_log_path.display());
 
     // Finder / Dock 双击启动 .app 时不带子命令，直接进入前台模式。
     // 这样 app bundle 的主可执行文件就是实际运行的进程，避免权限身份漂移。
     if app_bundle_launch {
         info!("Starting Open Flow from app bundle (foreground mode)...");
+        return cli::daemon::start_foreground(None);
+    }
+
+    if is_windows_direct_launch() {
+        info!("Starting Open Flow from direct Windows launch (foreground mode)...");
         return cli::daemon::start_foreground(None);
     }
 
@@ -289,6 +313,9 @@ async fn async_main(cmd: Commands) -> anyhow::Result<()> {
         }
         Commands::Setup { model_dir, force } => {
             commands::setup::run(model_dir, force).await?;
+        }
+        Commands::Support { tail_lines } => {
+            commands::support::run(tail_lines).await?;
         }
     }
 
