@@ -124,6 +124,16 @@ struct ContentView: View {
             guard config.provider == "local" else { return }
             config.selectLocalModelPreset(newValue)
         }
+        .onChange(of: selectedPane) { pane in
+            if pane == .permissions {
+                config.refreshPermissions()
+            } else if pane == .meetings {
+                config.refreshSystemAudioDiagnostics()
+                config.refreshMeetingSessionsOverview()
+            } else if pane == .logs {
+                config.loadLogs()
+            }
+        }
     }
 
     private var sidebar: some View {
@@ -705,7 +715,9 @@ struct ContentView: View {
                         title: tr("麦克风", "Microphone"),
                         description: tr("用于录音和转写你的语音。", "Needed for recording and transcribing your speech."),
                         granted: config.microphoneGranted,
-                        action: config.openMicrophoneSettings
+                        statusText: config.microphonePermissionStatusText,
+                        actionTitle: config.microphonePermissionActionTitle,
+                        action: config.resolveMicrophonePermission
                     )
 
                     rowDivider
@@ -730,6 +742,9 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+        .onAppear {
+            config.refreshPermissions()
         }
     }
 
@@ -1022,13 +1037,16 @@ struct ContentView: View {
         }
     }
 
-    private func permissionSettingsRow(title: String, description: String, granted: Bool, action: @escaping () -> Void) -> some View {
+    private func permissionSettingsRow(title: String, description: String, granted: Bool, statusText: String? = nil, actionTitle: String? = nil, action: @escaping () -> Void) -> some View {
         SettingsRow(label: title, description: description) {
             HStack(spacing: 10) {
-                StatusPill(text: granted ? tr("已授权", "Granted") : tr("需要授权", "Needs Access"), tone: granted ? .success : .warning)
+                StatusPill(
+                    text: statusText ?? (granted ? tr("已授权", "Granted") : tr("需要授权", "Needs Access")),
+                    tone: granted ? .success : .warning
+                )
                 SoftActionButton(
-                    title: tr("打开设置", "Open Settings"),
-                    icon: "arrow.up.right.square",
+                    title: actionTitle ?? tr("打开设置", "Open Settings"),
+                    icon: (actionTitle?.contains("请求") == true || actionTitle?.contains("Request") == true) ? "checkmark.shield" : "arrow.up.right.square",
                     fill: Color(red: 0.92, green: 0.95, blue: 0.99),
                     foreground: Color(red: 0.12, green: 0.16, blue: 0.24),
                     action: action

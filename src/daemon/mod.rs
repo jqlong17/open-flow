@@ -256,11 +256,14 @@ impl Daemon {
             current_exe, accessibility_ok, input_monitoring_ok
         );
         let microphone_required = self.uses_microphone_capture();
-        let microphone_ok = if microphone_required {
-            crate::hotkey::check_microphone_permission()
+        let microphone_status = if microphone_required {
+            Some(crate::hotkey::microphone_permission_status())
         } else {
-            true
+            None
         };
+        let microphone_ok = microphone_status
+            .map(|status| status.is_authorized())
+            .unwrap_or(true);
         println!("{}", ui.pick("🔎 权限诊断", "🔎 Permission Diagnostics"));
         println!(
             "   {} {}",
@@ -269,7 +272,15 @@ impl Daemon {
         );
         println!("   Accessibility: {}", accessibility_ok);
         println!("   Input Monitoring: {}", input_monitoring_ok);
-        println!("   Microphone: {}", microphone_ok);
+        if let Some(status) = microphone_status {
+            println!(
+                "   Microphone: {} ({})",
+                microphone_ok,
+                status.as_str()
+            );
+        } else {
+            println!("   Microphone: true (not_required)");
+        }
 
         // 请求缺失的权限（触发系统对话框）
         if !accessibility_ok {
@@ -303,7 +314,31 @@ impl Daemon {
                     "⚠️  Microphone permission is not granted yet."
                 )
             );
-            crate::hotkey::request_microphone_permission();
+            if let Some(status) = microphone_status {
+                println!(
+                    "{}",
+                    match status {
+                        crate::hotkey::MicrophonePermissionStatus::NotDetermined => ui.pick(
+                            "   请打开“权限”页并点击“请求授权”，让前台窗口触发系统麦克风弹窗。",
+                            "   Open the Permissions page and click Request Access so the foreground window can trigger the macOS microphone prompt.",
+                        ),
+                        crate::hotkey::MicrophonePermissionStatus::Denied
+                        | crate::hotkey::MicrophonePermissionStatus::Restricted => ui.pick(
+                            "   当前状态无法由后台自动修复，请前往：系统设置 > 隐私与安全性 > 麦克风。",
+                            "   This state cannot be fixed from the background daemon. Open System Settings > Privacy & Security > Microphone.",
+                        ),
+                        crate::hotkey::MicrophonePermissionStatus::Unknown(_) => ui.pick(
+                            "   当前麦克风权限状态异常。请在权限页重新请求授权，或前往系统设置手动检查。",
+                            "   The microphone permission state looks abnormal. Re-request access from the Permissions page or inspect System Settings manually.",
+                        ),
+                        crate::hotkey::MicrophonePermissionStatus::Authorized
+                        | crate::hotkey::MicrophonePermissionStatus::Unsupported => ui.pick(
+                            "   权限看起来已通过，请继续检查输入设备、静音状态或默认麦克风。",
+                            "   Permission looks granted. Check the selected input device, mute state, or the current default microphone next.",
+                        ),
+                    }
+                );
+            }
         }
 
         if !accessibility_ok || !input_monitoring_ok {
@@ -1166,11 +1201,16 @@ impl Daemon {
 
         let sample_rate = self.current_audio_info().sample_rate;
 
-        // 振幅诊断：如果音量过低说明麦克风权限缺失或静音
+        // 振幅诊断：区分“权限缺失”和“输入设备正常但采到静音”
         let max_amp = buffer.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
         let rms = (buffer.iter().map(|x| x * x).sum::<f32>() / buffer.len() as f32).sqrt();
         info!("[Audio] max_amp={:.6} rms={:.6}", max_amp, rms);
         if max_amp < 0.001 {
+            let microphone_status = if self.capture_mode == "microphone" {
+                Some(crate::hotkey::microphone_permission_status())
+            } else {
+                None
+            };
             self.finish_processing_without_result();
             self.emit_performance_log(PerformanceLogEntry {
                 schema_version: PERF_SCHEMA_VERSION,
@@ -1212,10 +1252,31 @@ impl Daemon {
             eprintln!(
                 "{}",
                 if self.capture_mode == "microphone" {
-                    ui.pick(
-                        format!("⚠️  录音振幅极低（max={:.6}），麦克风可能未授权。", max_amp),
-                        format!("⚠️  Recording amplitude is very low (max={:.6}). Microphone permission may be missing.", max_amp),
-                    )
+                    match microphone_status
+                        .unwrap_or(crate::hotkey::MicrophonePermissionStatus::Unknown(-1))
+                    {
+                        crate::hotkey::MicrophonePermissionStatus::Authorized => ui.pick(
+                            format!("⚠️  录音振幅极低（max={:.6}），麦克风权限已通过，但当前输入几乎没有声音。", max_amp),
+                            format!("⚠️  Recording amplitude is very low (max={:.6}). Microphone permission is granted, but the selected input is effectively silent.", max_amp),
+                        ),
+                        crate::hotkey::MicrophonePermissionStatus::NotDetermined => ui.pick(
+                            format!("⚠️  录音振幅极低（max={:.6}），麦克风权限还没有真正完成授权。", max_amp),
+                            format!("⚠️  Recording amplitude is very low (max={:.6}). Microphone access has not been fully granted yet.", max_amp),
+                        ),
+                        crate::hotkey::MicrophonePermissionStatus::Denied
+                        | crate::hotkey::MicrophonePermissionStatus::Restricted => ui.pick(
+                            format!("⚠️  录音振幅极低（max={:.6}），麦克风权限当前处于拒绝或受限状态。", max_amp),
+                            format!("⚠️  Recording amplitude is very low (max={:.6}). Microphone access is currently denied or restricted.", max_amp),
+                        ),
+                        crate::hotkey::MicrophonePermissionStatus::Unknown(_) => ui.pick(
+                            format!("⚠️  录音振幅极低（max={:.6}），麦克风权限状态异常或未稳定。", max_amp),
+                            format!("⚠️  Recording amplitude is very low (max={:.6}). The microphone permission state looks abnormal or unstable.", max_amp),
+                        ),
+                        crate::hotkey::MicrophonePermissionStatus::Unsupported => ui.pick(
+                            format!("⚠️  录音振幅极低（max={:.6}），当前输入几乎没有声音。", max_amp),
+                            format!("⚠️  Recording amplitude is very low (max={:.6}). The current input is effectively silent.", max_amp),
+                        ),
+                    }
                 } else {
                     ui.pick(
                         format!("⚠️  系统音频振幅极低（max={:.6}），当前目标可能没有有效声音输出。", max_amp),
@@ -1224,20 +1285,40 @@ impl Daemon {
                 }
             );
             if self.capture_mode == "microphone" {
-                eprintln!(
-                    "{}",
-                    ui.pick(
-                        "   请前往：系统设置 > 隐私与安全性 > 麦克风，将 Open Flow.app 添加到列表并启用。",
-                        "   Open System Settings > Privacy & Security > Microphone, then add and enable Open Flow.app.",
-                    )
-                );
-                eprintln!(
-                    "{}",
-                    ui.pick(
-                        "   然后完全退出并重新打开 Open Flow。",
-                        "   Then fully quit and reopen Open Flow."
-                    )
-                );
+                match microphone_status
+                    .unwrap_or(crate::hotkey::MicrophonePermissionStatus::Unknown(-1))
+                {
+                    crate::hotkey::MicrophonePermissionStatus::Authorized => {
+                        eprintln!(
+                            "{}",
+                            ui.pick(
+                                "   请检查：输入源是否选对、系统默认麦克风是否可用、麦克风是否静音，以及是否真的有声音输入。",
+                                "   Check the selected input source, whether the system default microphone is usable, whether the mic is muted, and whether there is actual input.",
+                            )
+                        );
+                    }
+                    crate::hotkey::MicrophonePermissionStatus::NotDetermined => {
+                        eprintln!(
+                            "{}",
+                            ui.pick(
+                                "   请打开设置窗口的“权限”页，点击“请求授权”，让前台窗口触发系统麦克风弹窗。",
+                                "   Open the Settings window, go to Permissions, and click Request Access so the foreground window can trigger the macOS microphone prompt.",
+                            )
+                        );
+                    }
+                    crate::hotkey::MicrophonePermissionStatus::Denied
+                    | crate::hotkey::MicrophonePermissionStatus::Restricted
+                    | crate::hotkey::MicrophonePermissionStatus::Unknown(_) => {
+                        eprintln!(
+                            "{}",
+                            ui.pick(
+                                "   请前往：系统设置 > 隐私与安全性 > 麦克风，确认 Open Flow 已启用；如仍无效，可先重置该权限后重新请求。",
+                                "   Open System Settings > Privacy & Security > Microphone and confirm Open Flow is enabled. If it still fails, reset the permission and request it again.",
+                            )
+                        );
+                    }
+                    crate::hotkey::MicrophonePermissionStatus::Unsupported => {}
+                }
             } else {
                 eprintln!(
                     "{}",

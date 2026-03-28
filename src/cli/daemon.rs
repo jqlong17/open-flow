@@ -1267,10 +1267,18 @@ pub async fn stop() -> Result<()> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
+struct PermissionStateSnapshot {
+    status: String,
+    granted: bool,
+    can_prompt: bool,
+    source: String,
+}
+
+#[derive(Serialize)]
 struct PermissionSnapshot {
-    accessibility: bool,
-    input_monitoring: bool,
-    microphone: bool,
+    accessibility: PermissionStateSnapshot,
+    input_monitoring: PermissionStateSnapshot,
+    microphone: PermissionStateSnapshot,
     current_exe: String,
 }
 
@@ -1281,10 +1289,36 @@ pub async fn permissions(json: bool) -> Result<()> {
     let current_exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|e| format!("<unavailable: {e}>"));
+    let accessibility_ok = crate::hotkey::check_accessibility_permission();
+    let input_monitoring_ok = crate::hotkey::check_input_monitoring_permission();
+    let microphone_status = crate::hotkey::microphone_permission_status();
     let snapshot = PermissionSnapshot {
-        accessibility: crate::hotkey::check_accessibility_permission(),
-        input_monitoring: crate::hotkey::check_input_monitoring_permission(),
-        microphone: crate::hotkey::check_microphone_permission(),
+        accessibility: PermissionStateSnapshot {
+            status: if accessibility_ok {
+                "authorized".to_string()
+            } else {
+                "needs_manual_grant".to_string()
+            },
+            granted: accessibility_ok,
+            can_prompt: !accessibility_ok,
+            source: "ax_is_process_trusted".to_string(),
+        },
+        input_monitoring: PermissionStateSnapshot {
+            status: if input_monitoring_ok {
+                "authorized".to_string()
+            } else {
+                "needs_manual_grant".to_string()
+            },
+            granted: input_monitoring_ok,
+            can_prompt: !input_monitoring_ok,
+            source: "cg_preflight_listen_event_access".to_string(),
+        },
+        microphone: PermissionStateSnapshot {
+            status: microphone_status.as_str().to_string(),
+            granted: microphone_status.is_authorized(),
+            can_prompt: microphone_status.can_prompt(),
+            source: "avcapturedevice.authorization_status".to_string(),
+        },
         current_exe,
     };
 
@@ -1302,9 +1336,18 @@ pub async fn permissions(json: bool) -> Result<()> {
         ui.pick("可执行文件:", "Executable:"),
         snapshot.current_exe
     );
-    println!("  Accessibility: {}", snapshot.accessibility);
-    println!("  Input Monitoring: {}", snapshot.input_monitoring);
-    println!("  Microphone: {}", snapshot.microphone);
+    println!(
+        "  Accessibility: {} ({})",
+        snapshot.accessibility.granted, snapshot.accessibility.status
+    );
+    println!(
+        "  Input Monitoring: {} ({})",
+        snapshot.input_monitoring.granted, snapshot.input_monitoring.status
+    );
+    println!(
+        "  Microphone: {} ({})",
+        snapshot.microphone.granted, snapshot.microphone.status
+    );
     Ok(())
 }
 

@@ -6,6 +6,59 @@ use tracing::{error, info, warn};
 
 use crate::common::types::HotkeyEvent;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicrophonePermissionStatus {
+    NotDetermined,
+    Restricted,
+    Denied,
+    Authorized,
+    Unknown(i64),
+    Unsupported,
+}
+
+impl MicrophonePermissionStatus {
+    pub fn is_authorized(self) -> bool {
+        matches!(self, Self::Authorized | Self::Unsupported)
+    }
+
+    pub fn can_prompt(self) -> bool {
+        matches!(self, Self::NotDetermined)
+    }
+
+    pub fn status_code(self) -> Option<i64> {
+        match self {
+            Self::NotDetermined => Some(0),
+            Self::Restricted => Some(1),
+            Self::Denied => Some(2),
+            Self::Authorized => Some(3),
+            Self::Unknown(raw) => Some(raw),
+            Self::Unsupported => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotDetermined => "not_determined",
+            Self::Restricted => "restricted",
+            Self::Denied => "denied",
+            Self::Authorized => "authorized",
+            Self::Unknown(_) => "unknown",
+            Self::Unsupported => "unsupported",
+        }
+    }
+
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::NotDetermined => "Not Determined",
+            Self::Restricted => "Restricted",
+            Self::Denied => "Denied",
+            Self::Authorized => "Authorized",
+            Self::Unknown(_) => "Unknown",
+            Self::Unsupported => "Unsupported",
+        }
+    }
+}
+
 /// 热键监听器，通过 rdev（底层 CGEventTap）监听全局按键事件
 pub struct HotkeyListener {
     sender: Sender<HotkeyEvent>,
@@ -530,7 +583,7 @@ pub fn request_microphone_permission() {
     #[cfg(target_os = "macos")]
     {
         match request_microphone_permission_macos() {
-            Some(true) => {
+            Some(MicrophonePermissionStatus::Authorized) => {
                 println!(
                     "{}",
                     ui.pick(
@@ -540,7 +593,7 @@ pub fn request_microphone_permission() {
                 );
                 return;
             }
-            Some(false) => {
+            Some(MicrophonePermissionStatus::Denied | MicrophonePermissionStatus::Restricted) => {
                 println!(
                     "{}",
                     ui.pick(
@@ -550,6 +603,11 @@ pub fn request_microphone_permission() {
                 );
                 return;
             }
+            Some(MicrophonePermissionStatus::NotDetermined) => {}
+            Some(MicrophonePermissionStatus::Unknown(raw)) => {
+                info!("Microphone permission request completed with unknown status={}", raw);
+            }
+            Some(MicrophonePermissionStatus::Unsupported) => return,
             None => {
                 info!("Microphone permission request did not complete synchronously");
             }
@@ -583,15 +641,30 @@ pub fn request_microphone_permission() {
 /// 返回 true 表示已授权（AVAuthorizationStatusAuthorized）。
 /// 未确定（0）时返回 false——首次运行需 NSMicrophoneUsageDescription 触发系统弹框。
 pub fn check_microphone_permission() -> bool {
+    microphone_permission_status().is_authorized()
+}
+
+pub fn microphone_permission_status() -> MicrophonePermissionStatus {
     #[cfg(target_os = "macos")]
     {
         let status = microphone_authorization_status_macos();
-        info!("Microphone TCC status: {}", status);
-        status == 3
+        let mapped = match status {
+            0 => MicrophonePermissionStatus::NotDetermined,
+            1 => MicrophonePermissionStatus::Restricted,
+            2 => MicrophonePermissionStatus::Denied,
+            3 => MicrophonePermissionStatus::Authorized,
+            raw => MicrophonePermissionStatus::Unknown(raw),
+        };
+        info!(
+            "Microphone TCC status: {} ({})",
+            status,
+            mapped.as_str()
+        );
+        mapped
     }
     #[cfg(not(target_os = "macos"))]
     {
-        true
+        MicrophonePermissionStatus::Unsupported
     }
 }
 
@@ -612,7 +685,7 @@ fn microphone_authorization_status_macos() -> i64 {
 }
 
 #[cfg(target_os = "macos")]
-fn request_microphone_permission_macos() -> Option<bool> {
+fn request_microphone_permission_macos() -> Option<MicrophonePermissionStatus> {
     use block::ConcreteBlock;
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
@@ -622,12 +695,15 @@ fn request_microphone_permission_macos() -> Option<bool> {
     #[link(name = "AVFoundation", kind = "framework")]
     extern "C" {}
 
-    let current_status = microphone_authorization_status_macos();
-    if current_status == 3 {
-        return Some(true);
-    }
-    if current_status == 2 || current_status == 1 {
-        return Some(false);
+    let current_status = microphone_permission_status();
+    if matches!(
+        current_status,
+        MicrophonePermissionStatus::Authorized
+            | MicrophonePermissionStatus::Denied
+            | MicrophonePermissionStatus::Restricted
+            | MicrophonePermissionStatus::Unsupported
+    ) {
+        return Some(current_status);
     }
 
     let completed = Arc::new((Mutex::new(None::<bool>), Condvar::new()));
@@ -659,7 +735,11 @@ fn request_microphone_permission_macos() -> Option<bool> {
         })
         .ok()?;
 
-    *result.0
+    match *result.0 {
+        Some(true) => Some(MicrophonePermissionStatus::Authorized),
+        Some(false) => Some(microphone_permission_status()),
+        None => None,
+    }
 }
 
 #[cfg(test)]

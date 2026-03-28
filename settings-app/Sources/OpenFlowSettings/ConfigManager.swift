@@ -1,11 +1,50 @@
 import Foundation
 import Combine
 import AppKit
+import AVFoundation
+
+private struct PermissionSnapshotItem: Decodable {
+    let status: String
+    let granted: Bool
+    let canPrompt: Bool
+    let source: String
+
+    init(status: String, granted: Bool, canPrompt: Bool, source: String) {
+        self.status = status
+        self.granted = granted
+        self.canPrompt = canPrompt
+        self.source = source
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case granted
+        case canPrompt = "can_prompt"
+        case source
+    }
+
+    init(from decoder: Decoder) throws {
+        if let container = try? decoder.singleValueContainer(),
+           let granted = try? container.decode(Bool.self) {
+            self.status = granted ? "authorized" : "unknown"
+            self.granted = granted
+            self.canPrompt = !granted
+            self.source = "legacy_bool_snapshot"
+            return
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        status = try container.decode(String.self, forKey: .status)
+        granted = try container.decode(Bool.self, forKey: .granted)
+        canPrompt = try container.decodeIfPresent(Bool.self, forKey: .canPrompt) ?? !granted
+        source = try container.decodeIfPresent(String.self, forKey: .source) ?? "unknown"
+    }
+}
 
 private struct PermissionSnapshot: Decodable {
-    let accessibility: Bool
-    let inputMonitoring: Bool
-    let microphone: Bool
+    let accessibility: PermissionSnapshotItem
+    let inputMonitoring: PermissionSnapshotItem
+    let microphone: PermissionSnapshotItem
 
     enum CodingKeys: String, CodingKey {
         case accessibility
@@ -108,6 +147,36 @@ private struct SystemAudioProbeSnapshot: Decodable {
 
 /// Manages reading/writing Open Flow's config.toml and daemon lifecycle
 class ConfigManager: ObservableObject {
+    enum MicrophonePermissionState: Equatable {
+        case notDetermined
+        case restricted
+        case denied
+        case authorized
+        case unknown
+
+        var isAuthorized: Bool {
+            if case .authorized = self {
+                return true
+            }
+            return false
+        }
+
+        init(snapshotStatus: String) {
+            switch snapshotStatus {
+            case "authorized":
+                self = .authorized
+            case "denied":
+                self = .denied
+            case "restricted":
+                self = .restricted
+            case "not_determined":
+                self = .notDetermined
+            default:
+                self = .unknown
+            }
+        }
+    }
+
     // Config fields
     @Published var uiLanguage: String = "zh"
     @Published var provider: String = "local"
@@ -141,6 +210,7 @@ class ConfigManager: ObservableObject {
     @Published var accessibilityGranted = false
     @Published var inputMonitoringGranted = false
     @Published var microphoneGranted = false
+    @Published var microphonePermissionState: MicrophonePermissionState = .unknown
     @Published var screenRecordingGranted = false
 
     // Hotkey test
@@ -209,7 +279,6 @@ class ConfigManager: ObservableObject {
             guard let self = self else { return }
             let wasRunningBefore = self.daemonRunning
             self.refreshStatus()
-            self.refreshPermissions()
 
             if wasRunningBefore && !self.daemonRunning {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
@@ -233,11 +302,13 @@ class ConfigManager: ObservableObject {
             let snapshot = self.fetchPermissionSnapshotFromOpenFlow()
             let ax = snapshot?.accessibility ?? self.checkAccessibility()
             let im = snapshot?.inputMonitoring ?? self.checkInputMonitoring()
-            let mic = snapshot?.microphone ?? self.checkMicrophone()
+            let micState = self.resolveMicrophonePermissionState(from: snapshot?.microphone)
+            let mic = micState.isAuthorized
 
             DispatchQueue.main.async {
-                self.accessibilityGranted = ax
-                self.inputMonitoringGranted = im
+                self.accessibilityGranted = ax.granted
+                self.inputMonitoringGranted = im.granted
+                self.microphonePermissionState = micState
                 self.microphoneGranted = mic
                 self.screenRecordingGranted = self.systemAudioScreenRecordingGranted
             }
@@ -273,41 +344,113 @@ class ConfigManager: ObservableObject {
         return try? JSONDecoder().decode(PermissionSnapshot.self, from: data)
     }
 
-    private func checkAccessibility() -> Bool {
+    private func checkAccessibility() -> PermissionSnapshotItem {
         // AXIsProcessTrusted checks if THIS process (same bundle) has accessibility
         typealias AXFunc = @convention(c) () -> Bool
         guard let handle = dlopen("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", RTLD_LAZY),
               let sym = dlsym(handle, "AXIsProcessTrusted") else {
-            return false
+            return PermissionSnapshotItem(status: "unknown", granted: false, canPrompt: true, source: "ax_is_process_trusted")
         }
         let fn = unsafeBitCast(sym, to: AXFunc.self)
-        return fn()
+        let granted = fn()
+        return PermissionSnapshotItem(
+            status: granted ? "authorized" : "needs_manual_grant",
+            granted: granted,
+            canPrompt: !granted,
+            source: "ax_is_process_trusted"
+        )
     }
 
-    private func checkInputMonitoring() -> Bool {
+    private func checkInputMonitoring() -> PermissionSnapshotItem {
         guard let handle = dlopen("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", RTLD_LAZY),
               let sym = dlsym(handle, "CGPreflightListenEventAccess") else {
-            return false
+            return PermissionSnapshotItem(status: "unknown", granted: false, canPrompt: true, source: "cg_preflight_listen_event_access")
         }
         typealias Func = @convention(c) () -> Bool
         let fn = unsafeBitCast(sym, to: Func.self)
-        return fn()
+        let granted = fn()
+        return PermissionSnapshotItem(
+            status: granted ? "authorized" : "needs_manual_grant",
+            granted: granted,
+            canPrompt: !granted,
+            source: "cg_preflight_listen_event_access"
+        )
     }
 
-    private func checkMicrophone() -> Bool {
-        // AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        // 0=NotDetermined, 1=Restricted, 2=Denied, 3=Authorized
-        typealias AuthFunc = @convention(c) (AnyObject, Selector, AnyObject) -> Int
-        guard let cls = NSClassFromString("AVCaptureDevice"),
-              let _ = NSClassFromString("NSString") else {
-            return false
+    private var nativeMicrophonePermissionState: MicrophonePermissionState {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .notDetermined:
+            return .notDetermined
+        case .restricted:
+            return .restricted
+        case .denied:
+            return .denied
+        case .authorized:
+            return .authorized
+        @unknown default:
+            return .unknown
         }
-        let sel = NSSelectorFromString("authorizationStatusForMediaType:")
-        let audioStr = "soun" as NSString  // AVMediaTypeAudio
-        let status = (cls as AnyObject).perform(sel, with: audioStr)
-        // perform returns Unmanaged<AnyObject>? — the actual return is an Int disguised as pointer
-        let rawValue = Int(bitPattern: status?.toOpaque())
-        return rawValue == 3
+    }
+
+    private func resolveMicrophonePermissionState(from snapshot: PermissionSnapshotItem?) -> MicrophonePermissionState {
+        if let snapshot {
+            return MicrophonePermissionState(snapshotStatus: snapshot.status)
+        }
+        return nativeMicrophonePermissionState
+    }
+
+    var microphonePermissionStatusText: String {
+        switch microphonePermissionState {
+        case .authorized:
+            return usesEnglish ? "Granted" : "已授权"
+        case .notDetermined:
+            return usesEnglish ? "Not Requested" : "未请求"
+        case .denied:
+            return usesEnglish ? "Denied" : "已拒绝"
+        case .restricted:
+            return usesEnglish ? "Restricted" : "受限制"
+        case .unknown:
+            return usesEnglish ? "Unknown" : "未知"
+        }
+    }
+
+    var microphonePermissionActionTitle: String {
+        switch microphonePermissionState {
+        case .authorized:
+            return usesEnglish ? "Open Settings" : "打开设置"
+        case .denied, .restricted:
+            return usesEnglish ? "Open Settings" : "打开设置"
+        case .notDetermined, .unknown:
+            return usesEnglish ? "Request Access" : "请求授权"
+        }
+    }
+
+    func resolveMicrophonePermission() {
+        switch microphonePermissionState {
+        case .authorized:
+            openMicrophoneSettings()
+        case .denied, .restricted:
+            openMicrophoneSettings()
+        case .notDetermined, .unknown:
+            requestMicrophonePermission()
+        }
+    }
+
+    private func requestMicrophonePermission() {
+        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.refreshPermissions()
+                if granted {
+                    self.lastError = ""
+                } else {
+                    self.lastError = self.usesEnglish
+                        ? "Microphone access was not granted. Please enable Open Flow in System Settings."
+                        : "麦克风授权未完成，请在系统设置里为 Open Flow 打开麦克风权限。"
+                    self.openMicrophoneSettings()
+                }
+            }
+        }
     }
 
     private func openSystemSettings(candidates: [String]) {
