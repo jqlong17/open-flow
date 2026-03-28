@@ -527,6 +527,35 @@ pub fn request_microphone_permission() {
     let ui = crate::common::config::Config::load()
         .map(|config| crate::common::ui::UiLanguage::from_config(&config))
         .unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    {
+        match request_microphone_permission_macos() {
+            Some(true) => {
+                println!(
+                    "{}",
+                    ui.pick(
+                        "   已收到麦克风授权结果：允许。请重启 Open Flow 让新权限生效。",
+                        "   Microphone access was granted. Please restart Open Flow so the new permission takes effect.",
+                    )
+                );
+                return;
+            }
+            Some(false) => {
+                println!(
+                    "{}",
+                    ui.pick(
+                        "   麦克风权限已被拒绝。请前往：系统设置 > 隐私与安全性 > 麦克风，手动开启 Open Flow.app。",
+                        "   Microphone access was denied. Open System Settings > Privacy & Security > Microphone and enable Open Flow.app manually.",
+                    )
+                );
+                return;
+            }
+            None => {
+                info!("Microphone permission request did not complete synchronously");
+            }
+        }
+    }
+
     info!(
         "{}",
         ui.pick(
@@ -556,32 +585,81 @@ pub fn request_microphone_permission() {
 pub fn check_microphone_permission() -> bool {
     #[cfg(target_os = "macos")]
     {
-        use objc::runtime::Object;
-        use objc::{class, msg_send, sel, sel_impl};
-
-        // 链接 AVFoundation 框架（仅需声明，不需要 extern fn）
-        #[link(name = "AVFoundation", kind = "framework")]
-        extern "C" {}
-
-        unsafe {
-            // AVMediaTypeAudio = @"soun"
-            let ns_string_cls = class!(NSString);
-            let audio_type: *mut Object =
-                msg_send![ns_string_cls, stringWithUTF8String: b"soun\0".as_ptr() as *const i8];
-
-            // [AVCaptureDevice authorizationStatusForMediaType:] → i64
-            // 0=NotDetermined 1=Restricted 2=Denied 3=Authorized
-            let status: i64 =
-                msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: audio_type];
-
-            info!("Microphone TCC status: {}", status);
-            status == 3
-        }
+        let status = microphone_authorization_status_macos();
+        info!("Microphone TCC status: {}", status);
+        status == 3
     }
     #[cfg(not(target_os = "macos"))]
     {
         true
     }
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_authorization_status_macos() -> i64 {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    #[link(name = "AVFoundation", kind = "framework")]
+    extern "C" {}
+
+    unsafe {
+        let ns_string_cls = class!(NSString);
+        let audio_type: *mut Object =
+            msg_send![ns_string_cls, stringWithUTF8String: b"soun\0".as_ptr() as *const i8];
+        msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: audio_type]
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn request_microphone_permission_macos() -> Option<bool> {
+    use block::ConcreteBlock;
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
+
+    #[link(name = "AVFoundation", kind = "framework")]
+    extern "C" {}
+
+    let current_status = microphone_authorization_status_macos();
+    if current_status == 3 {
+        return Some(true);
+    }
+    if current_status == 2 || current_status == 1 {
+        return Some(false);
+    }
+
+    let completed = Arc::new((Mutex::new(None::<bool>), Condvar::new()));
+    let completed_clone = completed.clone();
+
+    unsafe {
+        let ns_string_cls = class!(NSString);
+        let audio_type: *mut Object =
+            msg_send![ns_string_cls, stringWithUTF8String: b"soun\0".as_ptr() as *const i8];
+
+        let block = ConcreteBlock::new(move |granted: bool| {
+            let (lock, condvar) = &*completed_clone;
+            *lock.lock().unwrap() = Some(granted);
+            condvar.notify_all();
+        })
+        .copy();
+
+        let _: () = msg_send![
+            class!(AVCaptureDevice),
+            requestAccessForMediaType: audio_type
+            completionHandler: &*block
+        ];
+    }
+
+    let (lock, condvar) = &*completed;
+    let result = condvar
+        .wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(8), |state| {
+            state.is_none()
+        })
+        .ok()?;
+
+    *result.0
 }
 
 #[cfg(test)]

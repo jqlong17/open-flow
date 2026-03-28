@@ -2165,6 +2165,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "async-trait",
+ "block",
  "clap",
  "cocoa 0.25.0",
  "core-foundation 0.9.4",

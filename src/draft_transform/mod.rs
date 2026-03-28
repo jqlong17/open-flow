@@ -310,18 +310,42 @@ mod platform {
         fn layout_subviews(&self, width: f64, height: f64) {
             unsafe {
                 let padding = 14.0f64;
+                let row_gap = 10.0f64;
+                let button_gap = 8.0f64;
                 let header_height = 28.0f64;
                 let controls_height = 28.0f64;
-                let content_width = (width - padding * 2.0).max(240.0);
-                let available_body =
-                    (height - padding * 3.0 - header_height - controls_height - 24.0).max(240.0);
-                let prompt_height = (available_body * 0.42).clamp(110.0, 190.0);
+                let reset_button_width = 88.0f64;
+                let clear_button_width = 52.0f64;
+                let copy_button_width = 52.0f64;
+                let generate_button_width = 56.0f64;
+                let content_width = (width - padding * 2.0).max(220.0);
+                let header_available_width = (width - padding * 2.0).max(160.0);
+                let header_single_row =
+                    header_available_width >= 180.0 + button_gap + reset_button_width;
                 let header_y = height - padding - header_height;
-                let prompt_y = header_y - 10.0 - prompt_height;
-                let controls_y = prompt_y - 10.0 - controls_height;
+                let reset_y = if header_single_row {
+                    header_y
+                } else {
+                    header_y - row_gap - controls_height
+                };
+                let top_block_bottom = if header_single_row {
+                    header_y
+                } else {
+                    reset_y
+                };
+                let available_body =
+                    (top_block_bottom - row_gap - padding - controls_height - 8.0).max(210.0);
+                let prompt_height = (available_body * 0.42).clamp(96.0, 190.0);
+                let prompt_y = top_block_bottom - row_gap - prompt_height;
+                let controls_y = prompt_y - row_gap - controls_height;
                 let result_y = padding;
                 let result_height = (controls_y - 8.0 - result_y).max(120.0);
-                let tab_width = content_width.min(300.0);
+                let tab_width = if header_single_row {
+                    (header_available_width - reset_button_width - button_gap)
+                        .clamp(140.0, 300.0)
+                } else {
+                    header_available_width.clamp(140.0, 300.0)
+                };
 
                 let _: () = msg_send![
                     self.tab_control,
@@ -333,8 +357,8 @@ mod platform {
                 let _: () = msg_send![
                     self.reset_button,
                     setFrame: NSRect::new(
-                        NSPoint::new(width - padding - 88.0, header_y),
-                        NSSize::new(88.0, header_height)
+                        NSPoint::new(width - padding - reset_button_width, reset_y),
+                        NSSize::new(reset_button_width, controls_height)
                     )
                 ];
 
@@ -348,22 +372,34 @@ mod platform {
                 let _: () = msg_send![
                     self.clear_button,
                     setFrame: NSRect::new(
-                        NSPoint::new(width - padding - 176.0, controls_y),
-                        NSSize::new(52.0, controls_height)
+                        NSPoint::new(
+                            width
+                                - padding
+                                - generate_button_width
+                                - button_gap
+                                - copy_button_width
+                                - button_gap
+                                - clear_button_width,
+                            controls_y
+                        ),
+                        NSSize::new(clear_button_width, controls_height)
                     )
                 ];
                 let _: () = msg_send![
                     self.copy_button,
                     setFrame: NSRect::new(
-                        NSPoint::new(width - padding - 116.0, controls_y),
-                        NSSize::new(52.0, controls_height)
+                        NSPoint::new(
+                            width - padding - generate_button_width - button_gap - copy_button_width,
+                            controls_y
+                        ),
+                        NSSize::new(copy_button_width, controls_height)
                     )
                 ];
                 let _: () = msg_send![
                     self.generate_button,
                     setFrame: NSRect::new(
-                        NSPoint::new(width - padding - 56.0, controls_y),
-                        NSSize::new(56.0, controls_height)
+                        NSPoint::new(width - padding - generate_button_width, controls_y),
+                        NSSize::new(generate_button_width, controls_height)
                     )
                 ];
                 let _: () = msg_send![

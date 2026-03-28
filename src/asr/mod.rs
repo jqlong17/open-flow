@@ -73,14 +73,15 @@ impl AsrEngine {
     }
 
     /// SenseVoice ONNX textnorm id：与 FunASR 导出一致（textnorm_dict）
-    /// 0=woitn(无逆文本正则), 1=withitn(有逆文本正则)。可通过 OPEN_FLOW_TEXTNORM_ID 覆盖
+    /// 0=woitn(无逆文本正则), 1=withitn(带标点与逆文本正则)。
+    /// Open Flow 默认开启 withitn，以符合“自动标点/断句”的产品预期；可通过 OPEN_FLOW_TEXTNORM_ID 覆盖。
     fn resolve_textnorm_id() -> i32 {
         if let Ok(v) = std::env::var("OPEN_FLOW_TEXTNORM_ID") {
             if let Ok(parsed) = v.parse::<i32>() {
                 return parsed;
             }
         }
-        0
+        1
     }
 
     /// 实时口述场景默认优先中文，避免 auto 在短句上误判成韩语/空白。
@@ -439,5 +440,24 @@ mod regression_tests {
         let mut engine = AsrEngine::new(model_path);
         let result = engine.transcribe(&wav, Some("auto")).expect("transcribe");
         assert!(!result.text.is_empty(), "回归要求输出非空");
+    }
+
+    #[test]
+    fn textnorm_defaults_to_withitn() {
+        unsafe {
+            std::env::remove_var("OPEN_FLOW_TEXTNORM_ID");
+        }
+        assert_eq!(AsrEngine::resolve_textnorm_id(), 1);
+    }
+
+    #[test]
+    fn textnorm_honors_env_override() {
+        unsafe {
+            std::env::set_var("OPEN_FLOW_TEXTNORM_ID", "0");
+        }
+        assert_eq!(AsrEngine::resolve_textnorm_id(), 0);
+        unsafe {
+            std::env::remove_var("OPEN_FLOW_TEXTNORM_ID");
+        }
     }
 }

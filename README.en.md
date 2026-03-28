@@ -142,6 +142,34 @@ or on Windows:
 
 This prints the executable path, config path, input-device snapshot, and the tail of `daemon.log`. Sending that output to the maintainer makes remote debugging much easier. Issues are welcome, and PRs to improve the Windows / Linux experience are especially appreciated.
 
+**Windows / Linux model download fallback**
+
+If the default Hugging Face download times out, Open Flow will now try both the official source and `https://hf-mirror.com` automatically. You can also override the download source yourself:
+
+```powershell
+$env:OPEN_FLOW_HF_MIRROR = "https://hf-mirror.com"
+open-flow.exe setup
+```
+
+```powershell
+$env:OPEN_FLOW_MODEL_BASE_URL = "https://hf-mirror.com/haixuantao/SenseVoiceSmall-onnx/resolve/main"
+open-flow.exe setup
+```
+
+```powershell
+$env:OPEN_FLOW_MODEL_BASE_URLS = "https://my-mirror.example.com/haixuantao/SenseVoiceSmall-onnx/resolve/main,https://huggingface.co/haixuantao/SenseVoiceSmall-onnx/resolve/main"
+open-flow.exe setup
+```
+
+Manual model directory is also supported when remote download is unreliable:
+
+```powershell
+open-flow.exe setup --model-dir D:\open-flow-models\sensevoice-small
+open-flow.exe start --foreground --model D:\open-flow-models\sensevoice-small
+```
+
+On Windows, the default quantized model directory is usually `%APPDATA%\openflow\open-flow\data\models\sensevoice-small`.
+
 **Build from source** (install [Rust](https://rustup.rs/) first)
 
 ```powershell
@@ -214,4 +242,4 @@ Fork, open issues, submit PRs. Let's improve open-source voice input together.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

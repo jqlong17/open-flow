@@ -21,6 +21,8 @@ const MODEL_FILES_QUANTIZED: &[(&str, &str, &str)] = &[
 const MODEL_BASE_FP16: &str =
     "https://huggingface.co/ruska1117/SenseVoiceSmall-onnx-fp16/resolve/main";
 
+const DEFAULT_HF_MIRROR_BASE: &str = "https://hf-mirror.com";
+
 /// FP16 版需要下载的文件
 const MODEL_FILES_FP16: &[(&str, &str, &str)] = &[
     ("model.onnx", "model.onnx", "~4.3 MB"),
@@ -47,6 +49,55 @@ pub fn model_is_ready(dir: &Path) -> bool {
     let has_model = dir.join("model.onnx").exists() || dir.join("model_quant.onnx").exists();
     let has_tokens = dir.join("tokens.json").exists();
     has_model && has_tokens
+}
+
+fn model_base_candidates(base_url: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    if let Ok(raw) = std::env::var("OPEN_FLOW_MODEL_BASE_URLS") {
+        for item in raw.split(',') {
+            let trimmed = item.trim().trim_end_matches('/');
+            if !trimmed.is_empty() {
+                candidates.push(trimmed.to_string());
+            }
+        }
+    }
+
+    if let Ok(base) = std::env::var("OPEN_FLOW_MODEL_BASE_URL") {
+        let trimmed = base.trim().trim_end_matches('/');
+        if !trimmed.is_empty() {
+            candidates.push(trimmed.to_string());
+        }
+    }
+
+    if let Ok(mirror) = std::env::var("OPEN_FLOW_HF_MIRROR") {
+        let trimmed = mirror.trim().trim_end_matches('/');
+        if !trimmed.is_empty() {
+            candidates.push(rewrite_huggingface_base(base_url, trimmed));
+        }
+    }
+
+    candidates.push(base_url.trim_end_matches('/').to_string());
+    candidates.push(rewrite_huggingface_base(
+        base_url,
+        DEFAULT_HF_MIRROR_BASE,
+    ));
+
+    let mut deduped = Vec::new();
+    for candidate in candidates {
+        if !deduped.contains(&candidate) {
+            deduped.push(candidate);
+        }
+    }
+    deduped
+}
+
+fn rewrite_huggingface_base(base_url: &str, mirror_root: &str) -> String {
+    if let Some(rest) = base_url.strip_prefix("https://huggingface.co/") {
+        format!("{}/{}", mirror_root.trim_end_matches('/'), rest)
+    } else {
+        base_url.to_string()
+    }
 }
 
 /// 确保模型就绪：已有则直接返回路径，没有则按当前预设自动下载后写入 config。
@@ -108,9 +159,15 @@ pub async fn download_all(
         ModelPreset::Quantized => (MODEL_BASE_QUANTIZED, MODEL_FILES_QUANTIZED),
         ModelPreset::Fp16 => (MODEL_BASE_FP16, MODEL_FILES_FP16),
     };
+    let base_candidates = model_base_candidates(base_url);
 
     println!("📦 Open Flow 模型下载（预设: {}）", preset.as_str());
     println!("   目标目录: {}", dest_dir.display());
+    if base_candidates.len() > 1 {
+        println!("   下载源: {}", base_candidates.join("  ->  "));
+    } else {
+        println!("   下载源: {}", base_candidates[0]);
+    }
     println!();
 
     std::fs::create_dir_all(&dest_dir)
@@ -132,10 +189,15 @@ pub async fn download_all(
 
         println!("⬇️  正在下载: {} ({})", local_name, size_hint);
 
-        let url = format!("{}/{}", base_url, remote_name);
-        download_file(&client, &url, &dest_path)
+        download_file_with_fallback(&client, &base_candidates, remote_name, &dest_path)
             .await
-            .with_context(|| format!("下载失败: {} → {}", url, dest_path.display()))?;
+            .with_context(|| {
+                format!(
+                    "下载失败: {} → {}",
+                    remote_name,
+                    dest_path.display()
+                )
+            })?;
         println!("   ✓ 完成: {}", local_name);
     }
 
@@ -192,4 +254,38 @@ async fn download_file(client: &reqwest::Client, url: &str, dest: &Path) -> Resu
         .with_context(|| format!("重命名失败: {} → {}", tmp_path.display(), dest.display()))?;
 
     Ok(())
+}
+
+async fn download_file_with_fallback(
+    client: &reqwest::Client,
+    base_candidates: &[String],
+    remote_name: &str,
+    dest: &Path,
+) -> Result<()> {
+    let mut errors = Vec::new();
+
+    for (index, base) in base_candidates.iter().enumerate() {
+        let url = format!("{}/{}", base.trim_end_matches('/'), remote_name);
+        if base_candidates.len() > 1 {
+            println!("   尝试下载源 {}/{}: {}", index + 1, base_candidates.len(), url);
+        }
+
+        match download_file(client, &url, dest).await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                errors.push(format!("{} ({})", url, err));
+                let _ = tokio::fs::remove_file(dest.with_extension("tmp")).await;
+                eprintln!("   ⚠️  下载源失败: {}", url);
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "所有下载源均失败。\n{}",
+        errors
+            .into_iter()
+            .map(|item| format!(" - {}", item))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }

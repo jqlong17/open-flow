@@ -1,6 +1,6 @@
 [package]
 name = "open-flow"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 authors = ["Open Flow Contributors"]
 description = "AI coding voice input daemon for macOS - macOS 全局语音输入工具"
@@ -66,6 +66,7 @@ core-foundation = "0.9"
 core-graphics = "0.23"
 cocoa = "0.25"
 objc = "0.2"
+block = "0.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_System_Threading", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Console"] }

@@ -962,11 +962,17 @@ fn run_main_loop(
             });
         }
 
-        // 驱动平台事件循环：macOS NSRunLoop
+        // 驱动平台事件循环，确保托盘和菜单点击能被正确分发。
         #[cfg(target_os = "macos")]
         pump_run_loop_100ms();
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        pump_win32_messages();
+
+        #[cfg(target_os = "linux")]
+        pump_glib_linux();
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         // 托盘菜单「偏好设置...」-> 启动 SwiftUI 设置应用

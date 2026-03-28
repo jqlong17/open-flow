@@ -564,6 +564,11 @@ impl Daemon {
         }
     }
 
+    fn finish_processing_without_result(&self) {
+        self.is_processing.store(false, Ordering::SeqCst);
+        self.set_tray(TrayIconState::Idle);
+    }
+
     fn maybe_schedule_live_draft_transcription(&self) {
         if !self.draft_mode_active.load(Ordering::SeqCst) {
             return;
@@ -1104,7 +1109,7 @@ impl Daemon {
         let resource_after_record_stop = self.sample_resource_snapshot();
 
         if buffer.is_empty() {
-            self.is_processing.store(false, Ordering::SeqCst);
+            self.finish_processing_without_result();
             self.emit_performance_log(PerformanceLogEntry {
                 schema_version: PERF_SCHEMA_VERSION,
                 app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -1166,7 +1171,7 @@ impl Daemon {
         let rms = (buffer.iter().map(|x| x * x).sum::<f32>() / buffer.len() as f32).sqrt();
         info!("[Audio] max_amp={:.6} rms={:.6}", max_amp, rms);
         if max_amp < 0.001 {
-            self.is_processing.store(false, Ordering::SeqCst);
+            self.finish_processing_without_result();
             self.emit_performance_log(PerformanceLogEntry {
                 schema_version: PERF_SCHEMA_VERSION,
                 app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -1338,12 +1343,17 @@ impl Daemon {
                 None,
             );
 
-            tx.send(DaemonEvent::TranscriptionComplete(CompletedTranscription {
-                text: correction.text,
-                perf_entry,
-            }))
-            .await
-            .ok();
+            if tx
+                .send(DaemonEvent::TranscriptionComplete(CompletedTranscription {
+                    text: correction.text,
+                    perf_entry,
+                }))
+                .await
+                .is_err()
+            {
+                self.finish_processing_without_result();
+                anyhow::bail!("发送转写完成事件失败");
+            }
             return Ok(());
         }
 
@@ -1439,12 +1449,17 @@ impl Daemon {
             None,
         );
 
-        tx.send(DaemonEvent::TranscriptionComplete(CompletedTranscription {
-            text: correction.text,
-            perf_entry,
-        }))
-        .await
-        .ok();
+        if tx
+            .send(DaemonEvent::TranscriptionComplete(CompletedTranscription {
+                text: correction.text,
+                perf_entry,
+            }))
+            .await
+            .is_err()
+        {
+            self.finish_processing_without_result();
+            anyhow::bail!("发送转写完成事件失败");
+        }
 
         Ok(())
     }
@@ -1582,7 +1597,7 @@ impl Daemon {
         entries.sort_by_key(|entry| (entry.started_at_ms, entry.segment_index));
 
         if entries.is_empty() {
-            self.is_processing.store(false, Ordering::SeqCst);
+            self.finish_processing_without_result();
             self.emit_performance_log(PerformanceLogEntry {
                 schema_version: PERF_SCHEMA_VERSION,
                 app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -1722,12 +1737,17 @@ impl Daemon {
             None,
         );
 
-        tx.send(DaemonEvent::TranscriptionComplete(CompletedTranscription {
-            text: correction.text,
-            perf_entry,
-        }))
-        .await
-        .ok();
+        if tx
+            .send(DaemonEvent::TranscriptionComplete(CompletedTranscription {
+                text: correction.text,
+                perf_entry,
+            }))
+            .await
+            .is_err()
+        {
+            self.finish_processing_without_result();
+            anyhow::bail!("发送转写完成事件失败");
+        }
 
         Ok(())
     }
