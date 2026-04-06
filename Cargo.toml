@@ -9,6 +9,10 @@ repository = "https://github.com/jqlong17/open-flow"
 keywords = ["voice", "asr", "speech-to-text", "macos", "ai-coding"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+default = []
+mas = []
+
 [[bin]]
 name = "open-flow"
 path = "src/main.rs"

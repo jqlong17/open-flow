@@ -6,12 +6,44 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 BINARY_NAME="open-flow"
-APP_NAME="Open Flow"
-BUNDLE_ID="com.openflow.open-flow"
+APP_NAME="${OPEN_FLOW_APP_NAME:-Open Flow}"
+BUNDLE_ID="${OPEN_FLOW_BUNDLE_ID:-com.openflow.open-flow}"
 DIST_APP_DIR="$REPO_ROOT/dist/${APP_NAME}.app"
 INSTALL_APP_DIR="/Applications/${APP_NAME}.app"
 SIGN_IDENTITY="${OPEN_FLOW_SIGN_IDENTITY:-}"
 BUILD_PROFILE="${OPEN_FLOW_BUILD_PROFILE:-local}"
+INSTALL_TO_APPLICATIONS="${OPEN_FLOW_INSTALL_TO_APPLICATIONS:-1}"
+LSUIELEMENT_VALUE="${OPEN_FLOW_LSUIELEMENT:-1}"
+SIGN_ENTITLEMENTS="${OPEN_FLOW_SIGN_ENTITLEMENTS:-}"
+PROVISIONING_PROFILE_PATH="${OPEN_FLOW_PROVISIONING_PROFILE:-}"
+BUNDLED_MODEL_SOURCE="${OPEN_FLOW_BUNDLED_MODEL_SOURCE:-}"
+if [[ -n "${OPEN_FLOW_CARGO_FEATURES:-}" ]]; then
+  # shellcheck disable=SC2206
+  CARGO_FEATURE_ARGS=(--features ${OPEN_FLOW_CARGO_FEATURES})
+else
+  CARGO_FEATURE_ARGS=()
+fi
+
+if [[ "$LSUIELEMENT_VALUE" != "0" && "$LSUIELEMENT_VALUE" != "1" ]]; then
+  echo "Unsupported OPEN_FLOW_LSUIELEMENT: $LSUIELEMENT_VALUE"
+  echo "Expected: 0 or 1"
+  exit 1
+fi
+
+if [[ -n "$SIGN_ENTITLEMENTS" && ! -f "$SIGN_ENTITLEMENTS" ]]; then
+  echo "Entitlements file not found: $SIGN_ENTITLEMENTS"
+  exit 1
+fi
+
+if [[ -n "$PROVISIONING_PROFILE_PATH" && ! -f "$PROVISIONING_PROFILE_PATH" ]]; then
+  echo "Provisioning profile not found: $PROVISIONING_PROFILE_PATH"
+  exit 1
+fi
+
+if [[ -n "$BUNDLED_MODEL_SOURCE" && ! -d "$BUNDLED_MODEL_SOURCE" ]]; then
+  echo "Bundled model source directory not found: $BUNDLED_MODEL_SOURCE"
+  exit 1
+fi
 
 if [[ "$BUILD_PROFILE" != "local" && "$BUILD_PROFILE" != "distribution" ]]; then
   echo "Unsupported OPEN_FLOW_BUILD_PROFILE: $BUILD_PROFILE"
@@ -26,7 +58,7 @@ pkill -f "OpenFlowSettings" 2>/dev/null || true
 sleep 1
 
 echo "Building release binary..."
-cargo build --release
+cargo build --release "${CARGO_FEATURE_ARGS[@]}"
 
 echo "Building settings app..."
 cd "$REPO_ROOT/settings-app"
@@ -71,6 +103,19 @@ fi
 
 echo "Using system audio helper: $SYSTEM_AUDIO_HELPER_PATH"
 echo "Build profile: $BUILD_PROFILE"
+echo "LSUIElement: $LSUIELEMENT_VALUE"
+if [[ ${#CARGO_FEATURE_ARGS[@]} -gt 0 ]]; then
+  echo "Cargo features: ${OPEN_FLOW_CARGO_FEATURES}"
+fi
+if [[ -n "$SIGN_ENTITLEMENTS" ]]; then
+  echo "Signing entitlements: $SIGN_ENTITLEMENTS"
+fi
+if [[ -n "$PROVISIONING_PROFILE_PATH" ]]; then
+  echo "Provisioning profile: $PROVISIONING_PROFILE_PATH"
+fi
+if [[ -n "$BUNDLED_MODEL_SOURCE" ]]; then
+  echo "Bundled model source: $BUNDLED_MODEL_SOURCE"
+fi
 
 echo "Creating .app structure..."
 rm -rf "$DIST_APP_DIR"
@@ -92,6 +137,16 @@ chmod +x "$DIST_APP_DIR/Contents/MacOS/OpenFlowSystemAudioHelper"
 # 图标
 if [[ -f "$REPO_ROOT/assets/AppIcon.icns" ]]; then
   cp "$REPO_ROOT/assets/AppIcon.icns" "$DIST_APP_DIR/Contents/Resources/"
+fi
+
+if [[ -n "$BUNDLED_MODEL_SOURCE" ]]; then
+  MODEL_DEST_DIR="$DIST_APP_DIR/Contents/Resources/models/$(basename "$BUNDLED_MODEL_SOURCE")"
+  mkdir -p "$(dirname "$MODEL_DEST_DIR")"
+  cp -R "$BUNDLED_MODEL_SOURCE" "$MODEL_DEST_DIR"
+fi
+
+if [[ -n "$PROVISIONING_PROFILE_PATH" ]]; then
+  cp "$PROVISIONING_PROFILE_PATH" "$DIST_APP_DIR/Contents/embedded.provisionprofile"
 fi
 
 # Info.plist（版本号从 Cargo.toml 读取）
@@ -118,7 +173,19 @@ cat > "$DIST_APP_DIR/Contents/Info.plist" << EOF
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>LSUIElement</key>
+EOF
+
+if [[ "$LSUIELEMENT_VALUE" == "1" ]]; then
+cat >> "$DIST_APP_DIR/Contents/Info.plist" << EOF
 	<true/>
+EOF
+else
+cat >> "$DIST_APP_DIR/Contents/Info.plist" << EOF
+	<false/>
+EOF
+fi
+
+cat >> "$DIST_APP_DIR/Contents/Info.plist" << EOF
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Open Flow needs microphone access to record audio for real-time speech-to-text transcription.</string>
 	<key>NSAudioCaptureUsageDescription</key>
@@ -164,30 +231,41 @@ else
   echo "Tip: export OPEN_FLOW_SIGN_IDENTITY=\"Apple Development: Your Name (TEAMID)\""
 fi
 
-SIGN_ARGS=(--force --sign "$SIGN_IDENTITY")
-BUNDLE_SIGN_ARGS=(--force --deep --sign "$SIGN_IDENTITY")
+MAIN_SIGN_ARGS=(--force --sign "$SIGN_IDENTITY")
+HELPER_SIGN_ARGS=(--force --sign "$SIGN_IDENTITY")
+BUNDLE_SIGN_ARGS=(--force --sign "$SIGN_IDENTITY")
 
 if [[ "$SIGN_IDENTITY" == *"Developer ID Application"* ]]; then
-  SIGN_ARGS+=(--options runtime --timestamp)
+  MAIN_SIGN_ARGS+=(--options runtime --timestamp)
+  HELPER_SIGN_ARGS+=(--options runtime --timestamp)
   BUNDLE_SIGN_ARGS+=(--options runtime --timestamp)
 fi
 
-codesign "${SIGN_ARGS[@]}" --identifier "${BUNDLE_ID}" "$DIST_APP_DIR/Contents/MacOS/open-flow"
-codesign "${SIGN_ARGS[@]}" --identifier "${BUNDLE_ID}.settings" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
-codesign "${SIGN_ARGS[@]}" --identifier "${BUNDLE_ID}.system-audio-helper" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSystemAudioHelper"
+if [[ -n "$SIGN_ENTITLEMENTS" ]]; then
+  MAIN_SIGN_ARGS+=(--entitlements "$SIGN_ENTITLEMENTS")
+  BUNDLE_SIGN_ARGS+=(--entitlements "$SIGN_ENTITLEMENTS")
+fi
+
+codesign "${MAIN_SIGN_ARGS[@]}" --identifier "${BUNDLE_ID}" "$DIST_APP_DIR/Contents/MacOS/open-flow"
+codesign "${HELPER_SIGN_ARGS[@]}" --identifier "${BUNDLE_ID}.settings" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSettings"
+codesign "${HELPER_SIGN_ARGS[@]}" --identifier "${BUNDLE_ID}.system-audio-helper" "$DIST_APP_DIR/Contents/MacOS/OpenFlowSystemAudioHelper"
 codesign "${BUNDLE_SIGN_ARGS[@]}" "$DIST_APP_DIR"
 
 echo "Signing result:"
 codesign -dv --verbose=2 "$DIST_APP_DIR" 2>&1 | sed -n 's/^Identifier=/  Identifier=/p; s/^TeamIdentifier=/  TeamIdentifier=/p; s/^Authority=/  Authority=/p'
 
-echo "Installing to $INSTALL_APP_DIR ..."
-rm -rf "$INSTALL_APP_DIR" 2>/dev/null || true
-if ! cp -R "$DIST_APP_DIR" "/Applications/" 2>/dev/null; then
-  sudo rm -rf "$INSTALL_APP_DIR"
-  sudo cp -R "$DIST_APP_DIR" "/Applications/"
-fi
-
 echo "Done:"
 echo "  Build artifact: $DIST_APP_DIR"
-echo "  Installed app : $INSTALL_APP_DIR"
-echo "  Run: open \"$INSTALL_APP_DIR\""
+if [[ "$INSTALL_TO_APPLICATIONS" == "1" ]]; then
+  echo "Installing to $INSTALL_APP_DIR ..."
+  rm -rf "$INSTALL_APP_DIR" 2>/dev/null || true
+  if ! cp -R "$DIST_APP_DIR" "/Applications/" 2>/dev/null; then
+    sudo rm -rf "$INSTALL_APP_DIR"
+    sudo cp -R "$DIST_APP_DIR" "/Applications/"
+  fi
+  echo "  Installed app : $INSTALL_APP_DIR"
+  echo "  Run: open \"$INSTALL_APP_DIR\""
+else
+  echo "  Install step : skipped (OPEN_FLOW_INSTALL_TO_APPLICATIONS=$INSTALL_TO_APPLICATIONS)"
+  echo "  Run: open \"$DIST_APP_DIR\""
+fi

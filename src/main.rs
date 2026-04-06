@@ -13,6 +13,7 @@ use open_flow::hotkey;
 use open_flow::overlay;
 use open_flow::text_injection;
 use open_flow::tray;
+use open_flow::IS_MAS_BUILD;
 
 mod cli;
 mod daemon;
@@ -84,7 +85,7 @@ fn redirect_app_bundle_stdio_to_log() {
 
 #[derive(Parser)]
 #[command(name = "open-flow")]
-#[command(about = "AI coding voice input for macOS")]
+#[command(about = if IS_MAS_BUILD { "Offline voice input for Mac App Store" } else { "AI coding voice input for macOS" })]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -149,6 +150,7 @@ enum Commands {
     },
 
     /// Switch or list model preset (quantized 默认 | fp16)，缺的模型会自动下载
+    #[cfg(not(feature = "mas"))]
     Model {
         #[command(subcommand)]
         command: ModelCommand,
@@ -160,6 +162,9 @@ enum Commands {
         /// Emit machine-readable JSON for the settings app
         #[arg(long)]
         json: bool,
+        /// Request microphone access before printing the snapshot
+        #[arg(long)]
+        request_microphone: bool,
     },
 
     /// List audio input devices for the current machine
@@ -172,6 +177,7 @@ enum Commands {
 
     /// Manually download the ASR model (手动下载模型，首次运行会自动触发无需手动执行)
     #[command(hide = true)]
+    #[cfg(not(feature = "mas"))]
     Setup {
         /// Custom model installation directory (default: app data dir)
         #[arg(short, long)]
@@ -192,6 +198,7 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+#[cfg(not(feature = "mas"))]
 enum ModelCommand {
     /// 切换到指定预设；若该预设对应目录无模型则自动下载
     Use {
@@ -294,6 +301,7 @@ async fn async_main(cmd: Commands) -> anyhow::Result<()> {
             )
             .await?;
         }
+        #[cfg(not(feature = "mas"))]
         Commands::Model { command } => match command {
             ModelCommand::Use { preset, download } => {
                 let p = preset
@@ -305,12 +313,16 @@ async fn async_main(cmd: Commands) -> anyhow::Result<()> {
                 commands::model::list()?;
             }
         },
-        Commands::Permissions { json } => {
-            cli::daemon::permissions(json).await?;
+        Commands::Permissions {
+            json,
+            request_microphone,
+        } => {
+            cli::daemon::permissions(json, request_microphone).await?;
         }
         Commands::AudioDevices { json } => {
             commands::audio_devices::run(json).await?;
         }
+        #[cfg(not(feature = "mas"))]
         Commands::Setup { model_dir, force } => {
             commands::setup::run(model_dir, force).await?;
         }

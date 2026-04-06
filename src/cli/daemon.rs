@@ -626,13 +626,19 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
         tracing::info!("✅ 浮动指示器已创建");
     }
 
-    use crate::draft_panel::{DraftPanel, DraftPanelEvent};
     let draft_mode_active = Arc::new(AtomicBool::new(false));
-    let draft_panel = DraftPanel::new(draft_mode_active.clone()).map(Arc::new);
-    let (draft_tx, draft_rx) = std::sync::mpsc::sync_channel::<DraftPanelEvent>(64);
-    if draft_panel.is_some() {
-        tracing::info!("✅ 草稿面板已创建");
-    }
+    let (draft_panel, draft_tx, draft_rx) = if crate::IS_MAS_BUILD {
+        let (_tx, rx) = std::sync::mpsc::sync_channel::<crate::draft_panel::DraftPanelEvent>(1);
+        (None, None, rx)
+    } else {
+        use crate::draft_panel::{DraftPanel, DraftPanelEvent};
+        let panel = DraftPanel::new(draft_mode_active.clone()).map(Arc::new);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<DraftPanelEvent>(64);
+        if panel.is_some() {
+            tracing::info!("✅ 草稿面板已创建");
+        }
+        (panel, Some(tx), rx)
+    };
 
     // ── Settings app 路径（与主二进制同目录）──────────────────────
     let settings_app_path = std::env::current_exe()
@@ -643,7 +649,7 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
     // ── 构建 ASR provider ──────────────────────────────────────────
     let config = Config::load().unwrap_or_default();
     let ui = UiLanguage::from_config(&config);
-    let provider: Arc<dyn AsrProvider> = match config.provider.as_str() {
+    let provider: Arc<dyn AsrProvider> = match config.resolved_provider().as_str() {
         "groq" => {
             let api_key = config.resolved_groq_api_key();
             match GroqAsrProvider::new(
@@ -731,7 +737,7 @@ pub fn start_foreground(model: Option<PathBuf>) -> anyhow::Result<()> {
                 provider,
                 tray_handle,
                 draft_mode_active_for_daemon,
-                Some(draft_tx),
+                draft_tx,
             )
             .await
             {
@@ -808,14 +814,16 @@ fn run_main_loop(
     #[cfg(target_os = "macos")]
     let mut update_download_rx: Option<std::sync::mpsc::Receiver<UpdateDownloadEvent>> = None;
 
-    if let Some(t) = tray {
-        t.set_update_menu_text(ui_language.tray_update());
-        t.set_update_menu_enabled(true);
-        t.set_draft_menu_text(if draft_mode_active.load(Ordering::SeqCst) {
-            ui_language.tray_draft_checked()
-        } else {
-            ui_language.tray_draft()
-        });
+    if !crate::IS_MAS_BUILD {
+        if let Some(t) = tray {
+            t.set_update_menu_text(ui_language.tray_update());
+            t.set_update_menu_enabled(true);
+            t.set_draft_menu_text(if draft_mode_active.load(Ordering::SeqCst) {
+                ui_language.tray_draft_checked()
+            } else {
+                ui_language.tray_draft()
+            });
+        }
     }
 
     loop {
@@ -826,6 +834,7 @@ fn run_main_loop(
         }
 
         #[cfg(target_os = "macos")]
+        if !crate::IS_MAS_BUILD {
         if let Some(rx) = update_download_rx.take() {
             let mut keep_rx = true;
 
@@ -916,6 +925,7 @@ fn run_main_loop(
                 update_download_rx = Some(rx);
             }
         }
+        }
 
         // 应用 overlay 状态更新
         while let Ok(state) = overlay_rx.try_recv() {
@@ -942,7 +952,8 @@ fn run_main_loop(
             panel.poll_aux_windows();
         }
 
-        if draft_mode_active.load(Ordering::SeqCst)
+        if !crate::IS_MAS_BUILD
+            && draft_mode_active.load(Ordering::SeqCst)
             && draft_panel
                 .map(|panel| panel.consume_close_requested())
                 .unwrap_or(false)
@@ -954,12 +965,14 @@ fn run_main_loop(
             }
         }
 
+        if !crate::IS_MAS_BUILD {
         if let Some(t) = tray {
             t.set_draft_menu_text(if draft_mode_active.load(Ordering::SeqCst) {
                 ui_language.tray_draft_checked()
             } else {
                 ui_language.tray_draft()
             });
+        }
         }
 
         // 驱动平台事件循环，确保托盘和菜单点击能被正确分发。
@@ -984,7 +997,7 @@ fn run_main_loop(
             }
         }
 
-        if tray.map_or(false, |t| t.draft_requested()) {
+        if !crate::IS_MAS_BUILD && tray.map_or(false, |t| t.draft_requested()) {
             let next = !draft_mode_active.load(Ordering::SeqCst);
             draft_mode_active.store(next, Ordering::SeqCst);
 
@@ -999,7 +1012,7 @@ fn run_main_loop(
         }
 
         // 托盘菜单「检查更新」（仅 macOS .app）
-        if tray.map_or(false, |t| t.update_requested()) {
+        if !crate::IS_MAS_BUILD && tray.map_or(false, |t| t.update_requested()) {
             #[cfg(target_os = "macos")]
             if let Some(zip_path) = downloaded_update_zip.as_ref() {
                 match start_install_downloaded_app_update(zip_path, current_pid) {
@@ -1282,7 +1295,7 @@ struct PermissionSnapshot {
     current_exe: String,
 }
 
-pub async fn permissions(json: bool) -> Result<()> {
+pub async fn permissions(json: bool, request_microphone: bool) -> Result<()> {
     let ui = Config::load()
         .map(|config| UiLanguage::from_config(&config))
         .unwrap_or_default();
@@ -1291,7 +1304,12 @@ pub async fn permissions(json: bool) -> Result<()> {
         .unwrap_or_else(|e| format!("<unavailable: {e}>"));
     let accessibility_ok = crate::hotkey::check_accessibility_permission();
     let input_monitoring_ok = crate::hotkey::check_input_monitoring_permission();
-    let microphone_status = crate::hotkey::microphone_permission_status();
+    let microphone_status = if request_microphone {
+        crate::hotkey::request_microphone_permission_status()
+            .unwrap_or_else(crate::hotkey::microphone_permission_status)
+    } else {
+        crate::hotkey::microphone_permission_status()
+    };
     let snapshot = PermissionSnapshot {
         accessibility: PermissionStateSnapshot {
             status: if accessibility_ok {
@@ -1372,9 +1390,9 @@ pub async fn status() -> Result<()> {
             println!(
                 "  {}     {:?}",
                 ui.pick("模型:", "Model:"),
-                config.model_path.unwrap_or_default()
+                config.model_path.clone().unwrap_or_default()
             );
-            println!("  Provider: {}", config.provider);
+            println!("  Provider: {}", config.resolved_provider());
             println!("  {}     {}", ui.pick("热键:", "Hotkey:"), config.hotkey);
             println!(
                 "  {} {}",

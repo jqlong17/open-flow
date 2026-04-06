@@ -53,6 +53,22 @@ private struct PermissionSnapshot: Decodable {
     }
 }
 
+private struct RequiredPermissionState: Equatable {
+    let accessibility: Bool
+    let inputMonitoring: Bool
+    let microphone: Bool
+
+    var allGranted: Bool {
+        accessibility && inputMonitoring && microphone
+    }
+
+    func gainedAccess(comparedTo previous: RequiredPermissionState) -> Bool {
+        (!previous.accessibility && accessibility)
+            || (!previous.inputMonitoring && inputMonitoring)
+            || (!previous.microphone && microphone)
+    }
+}
+
 struct InputDeviceOption: Identifiable, Decodable, Hashable {
     let name: String
     let isDefault: Bool
@@ -147,6 +163,8 @@ private struct SystemAudioProbeSnapshot: Decodable {
 
 /// Manages reading/writing Open Flow's config.toml and daemon lifecycle
 class ConfigManager: ObservableObject {
+    private static let defaultAppSupportID = "com.openflow.open-flow"
+
     enum MicrophonePermissionState: Equatable {
         case notDetermined
         case restricted
@@ -212,6 +230,8 @@ class ConfigManager: ObservableObject {
     @Published var microphoneGranted = false
     @Published var microphonePermissionState: MicrophonePermissionState = .unknown
     @Published var screenRecordingGranted = false
+    @Published var permissionRecoveryInProgress = false
+    @Published var permissionRecoveryStatus: String = ""
 
     // Hotkey test
     @Published var hotkeyTestActive = false
@@ -259,11 +279,16 @@ class ConfigManager: ObservableObject {
     private var configPath: URL
     private var dataDir: URL
     private var statusTimer: Timer?
+    private var permissionRecoveryTimer: Timer?
+    private var permissionRecoveryBaseline: RequiredPermissionState?
+    private var permissionRecoveryDeadline: Date?
+    private var permissionRecoveryRestartScheduled = false
 
     init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let configDir = appSupport.appendingPathComponent("com.openflow.open-flow")
-        dataDir = appSupport.appendingPathComponent("com.openflow.open-flow")
+        let appSupportID = Self.currentAppSupportID()
+        let configDir = appSupport.appendingPathComponent(appSupportID)
+        dataDir = appSupport.appendingPathComponent(appSupportID)
         configPath = configDir.appendingPathComponent("config.toml")
 
         try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
@@ -290,6 +315,15 @@ class ConfigManager: ObservableObject {
 
     deinit {
         statusTimer?.invalidate()
+        permissionRecoveryTimer?.invalidate()
+    }
+
+    private static func currentAppSupportID() -> String {
+        if let bundleID = Bundle.main.bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !bundleID.isEmpty {
+            return bundleID
+        }
+        return defaultAppSupportID
     }
 
     // MARK: - Permissions
@@ -298,30 +332,42 @@ class ConfigManager: ObservableObject {
         #if os(macOS)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-
-            let snapshot = self.fetchPermissionSnapshotFromOpenFlow()
-            let ax = snapshot?.accessibility ?? self.checkAccessibility()
-            let im = snapshot?.inputMonitoring ?? self.checkInputMonitoring()
-            let micState = self.resolveMicrophonePermissionState(from: snapshot?.microphone)
-            let mic = micState.isAuthorized
+            let state = self.fetchRequiredPermissionState()
+            let micState = self.resolveMicrophonePermissionState(from: self.fetchPermissionSnapshotFromOpenFlow()?.microphone)
 
             DispatchQueue.main.async {
-                self.accessibilityGranted = ax.granted
-                self.inputMonitoringGranted = im.granted
+                self.accessibilityGranted = state.accessibility
+                self.inputMonitoringGranted = state.inputMonitoring
                 self.microphonePermissionState = micState
-                self.microphoneGranted = mic
+                self.microphoneGranted = state.microphone
                 self.screenRecordingGranted = self.systemAudioScreenRecordingGranted
             }
         }
         #endif
     }
 
-    private func fetchPermissionSnapshotFromOpenFlow() -> PermissionSnapshot? {
+    private func fetchRequiredPermissionState(requestMicrophone: Bool = false) -> RequiredPermissionState {
+        let snapshot = fetchPermissionSnapshotFromOpenFlow(requestMicrophone: requestMicrophone)
+        let accessibility = snapshot?.accessibility.granted ?? checkAccessibility().granted
+        let inputMonitoring = snapshot?.inputMonitoring.granted ?? checkInputMonitoring().granted
+        let microphone = resolveMicrophonePermissionState(from: snapshot?.microphone).isAuthorized
+        return RequiredPermissionState(
+            accessibility: accessibility,
+            inputMonitoring: inputMonitoring,
+            microphone: microphone
+        )
+    }
+
+    private func fetchPermissionSnapshotFromOpenFlow(requestMicrophone: Bool = false) -> PermissionSnapshot? {
         guard let binary = findOpenFlowBinary() else { return nil }
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: binary)
-        task.arguments = ["permissions", "--json"]
+        var arguments = ["permissions", "--json"]
+        if requestMicrophone {
+            arguments.append("--request-microphone")
+        }
+        task.arguments = arguments
 
         let stdout = Pipe()
         let stderr = Pipe()
@@ -430,24 +476,39 @@ class ConfigManager: ObservableObject {
         case .authorized:
             openMicrophoneSettings()
         case .denied, .restricted:
+            beginPermissionRecoveryWatch()
             openMicrophoneSettings()
         case .notDetermined, .unknown:
+            beginPermissionRecoveryWatch()
             requestMicrophonePermission()
         }
     }
 
     private func requestMicrophonePermission() {
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+
+            let snapshot = self.fetchPermissionSnapshotFromOpenFlow(requestMicrophone: true)
+            let state = self.resolveMicrophonePermissionState(from: snapshot?.microphone)
+            let requiredState = self.fetchRequiredPermissionState()
+
             DispatchQueue.main.async {
-                guard let self = self else { return }
-                self.refreshPermissions()
-                if granted {
+                self.microphonePermissionState = state
+                self.microphoneGranted = requiredState.microphone
+                self.accessibilityGranted = requiredState.accessibility
+                self.inputMonitoringGranted = requiredState.inputMonitoring
+
+                if state.isAuthorized {
                     self.lastError = ""
+                    self.refreshPermissions()
+                    self.handlePermissionRecoveryStateUpdate(requiredState)
                 } else {
                     self.lastError = self.usesEnglish
                         ? "Microphone access was not granted. Please enable Open Flow in System Settings."
                         : "麦克风授权未完成，请在系统设置里为 Open Flow 打开麦克风权限。"
-                    self.openMicrophoneSettings()
+                    if state != .notDetermined {
+                        self.openMicrophoneSettings()
+                    }
                 }
             }
         }
@@ -474,6 +535,7 @@ class ConfigManager: ObservableObject {
     }
 
     func openAccessibilitySettings() {
+        beginPermissionRecoveryWatch()
         openSystemSettings(candidates: [
             "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
@@ -481,6 +543,7 @@ class ConfigManager: ObservableObject {
     }
 
     func openMicrophoneSettings() {
+        beginPermissionRecoveryWatch()
         openSystemSettings(candidates: [
             "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone",
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
@@ -488,6 +551,7 @@ class ConfigManager: ObservableObject {
     }
 
     func openInputMonitoringSettings() {
+        beginPermissionRecoveryWatch()
         openSystemSettings(candidates: [
             "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ListenEvent",
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
@@ -1057,6 +1121,112 @@ class ConfigManager: ObservableObject {
         }
     }
 
+    private func beginPermissionRecoveryWatch() {
+        let baseline = RequiredPermissionState(
+            accessibility: accessibilityGranted,
+            inputMonitoring: inputMonitoringGranted,
+            microphone: microphoneGranted
+        )
+
+        guard !baseline.allGranted else { return }
+
+        permissionRecoveryBaseline = baseline
+        permissionRecoveryDeadline = Date().addingTimeInterval(30)
+        permissionRecoveryRestartScheduled = false
+        permissionRecoveryInProgress = true
+        permissionRecoveryStatus = usesEnglish
+            ? "Waiting for macOS permission changes…"
+            : "正在等待 macOS 权限更新…"
+
+        permissionRecoveryTimer?.invalidate()
+        permissionRecoveryTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.pollPermissionRecovery()
+        }
+    }
+
+    private func stopPermissionRecoveryWatch(resetStatus: Bool) {
+        permissionRecoveryTimer?.invalidate()
+        permissionRecoveryTimer = nil
+        permissionRecoveryBaseline = nil
+        permissionRecoveryDeadline = nil
+        permissionRecoveryRestartScheduled = false
+        permissionRecoveryInProgress = false
+        if resetStatus {
+            permissionRecoveryStatus = ""
+        }
+    }
+
+    private func pollPermissionRecovery() {
+        guard let baseline = permissionRecoveryBaseline else {
+            stopPermissionRecoveryWatch(resetStatus: true)
+            return
+        }
+
+        if let deadline = permissionRecoveryDeadline, Date() > deadline {
+            permissionRecoveryStatus = usesEnglish
+                ? "Still waiting for permission changes. You can keep System Settings open or restart manually."
+                : "仍在等待权限生效。你可以继续保留系统设置页面，或手动重启 daemon。"
+            stopPermissionRecoveryWatch(resetStatus: false)
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let current = self.fetchRequiredPermissionState()
+            DispatchQueue.main.async {
+                self.handlePermissionRecoveryStateUpdate(current, baseline: baseline)
+            }
+        }
+    }
+
+    private func handlePermissionRecoveryStateUpdate(_ current: RequiredPermissionState, baseline: RequiredPermissionState? = nil) {
+        let reference = baseline ?? permissionRecoveryBaseline
+
+        accessibilityGranted = current.accessibility
+        inputMonitoringGranted = current.inputMonitoring
+        microphoneGranted = current.microphone
+
+        guard let reference else {
+            if current.allGranted {
+                permissionRecoveryStatus = usesEnglish
+                    ? "All required permissions are ready."
+                    : "必需权限已全部就绪。"
+            }
+            return
+        }
+
+        if current.gainedAccess(comparedTo: reference) && current.allGranted {
+            if permissionRecoveryRestartScheduled {
+                return
+            }
+            permissionRecoveryRestartScheduled = true
+            permissionRecoveryStatus = usesEnglish
+                ? "Permissions updated. Restarting daemon…"
+                : "权限已更新，正在重启 daemon…"
+            permissionRecoveryTimer?.invalidate()
+            permissionRecoveryTimer = nil
+            restartDaemon()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+                guard let self = self else { return }
+                self.refreshPermissions()
+                self.refreshStatus()
+                self.permissionRecoveryStatus = self.usesEnglish
+                    ? "Daemon reloaded."
+                    : "daemon 已自动刷新。"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    self.stopPermissionRecoveryWatch(resetStatus: true)
+                }
+            }
+            return
+        }
+
+        if !current.allGranted {
+            permissionRecoveryStatus = usesEnglish
+                ? "Waiting for the remaining permissions…"
+                : "正在等待剩余权限生效…"
+        }
+    }
+
     func forceQuitAll() {
         lastError = ""
         // Kill the daemon by PID (not pkill which would kill us too)
@@ -1572,8 +1742,23 @@ class ConfigManager: ObservableObject {
     }
 
     func defaultModelPath(for preset: String) -> String {
+        if let bundled = bundledModelPath(for: preset) {
+            return bundled.path
+        }
         let subdir = preset == "fp16" ? "sensevoice-small-fp16" : "sensevoice-small"
         return dataDir.appendingPathComponent("models/\(subdir)").path
+    }
+
+    private func bundledModelPath(for preset: String) -> URL? {
+        guard let resourceURL = Bundle.main.resourceURL else {
+            return nil
+        }
+        let subdir = preset == "fp16" ? "sensevoice-small-fp16" : "sensevoice-small"
+        let dir = resourceURL.appendingPathComponent("models/\(subdir)", isDirectory: true)
+        let onnxExists = FileManager.default.fileExists(atPath: dir.appendingPathComponent("model_quant.onnx").path)
+            || FileManager.default.fileExists(atPath: dir.appendingPathComponent("model.onnx").path)
+        let tokensExist = FileManager.default.fileExists(atPath: dir.appendingPathComponent("tokens.json").path)
+        return onnxExists && tokensExist ? dir : nil
     }
 
     func selectLocalModelPreset(_ preset: String) {
@@ -1587,7 +1772,7 @@ class ConfigManager: ObservableObject {
     func ensureSelectedLocalModelReady(autoDownload: Bool = true) {
         guard provider == "local" else { return }
         selectLocalModelPreset(modelPreset)
-        if autoDownload && !modelReady && !modelDownloading {
+        if autoDownload && bundledModelPath(for: normalizedModelPreset) == nil && !modelReady && !modelDownloading {
             downloadModel()
         }
     }

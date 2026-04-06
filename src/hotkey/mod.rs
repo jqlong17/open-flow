@@ -637,6 +637,17 @@ pub fn request_microphone_permission() {
     );
 }
 
+pub fn request_microphone_permission_status() -> Option<MicrophonePermissionStatus> {
+    #[cfg(target_os = "macos")]
+    {
+        request_microphone_permission_macos()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Some(MicrophonePermissionStatus::Unsupported)
+    }
+}
+
 /// 检查麦克风权限状态。
 /// 返回 true 表示已授权（AVAuthorizationStatusAuthorized）。
 /// 未确定（0）时返回 false——首次运行需 NSMicrophoneUsageDescription 触发系统弹框。

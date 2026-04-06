@@ -41,6 +41,31 @@ pub fn default_model_dir(preset: ModelPreset) -> Result<PathBuf> {
     Ok(Config::data_dir()?.join("models").join(subdir))
 }
 
+fn model_subdir_name(preset: ModelPreset) -> &'static str {
+    match preset {
+        ModelPreset::Quantized => "sensevoice-small",
+        ModelPreset::Fp16 => "sensevoice-small-fp16",
+    }
+}
+
+fn current_app_resources_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let app_dir = exe
+        .ancestors()
+        .find(|path| path.extension().and_then(|s| s.to_str()) == Some("app"))?;
+    Some(app_dir.join("Contents").join("Resources"))
+}
+
+pub fn bundled_model_dir(preset: ModelPreset) -> Option<PathBuf> {
+    let resources_dir = current_app_resources_dir()?;
+    let candidate = resources_dir.join("models").join(model_subdir_name(preset));
+    if model_is_ready(&candidate) {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
 /// 检查目录内是否存在可用的 ONNX 模型文件
 pub fn model_is_ready(dir: &Path) -> bool {
     if !dir.is_dir() {
@@ -109,6 +134,12 @@ pub async fn ensure_model_ready(model_override: Option<PathBuf>) -> Result<PathB
     let config = Config::load().unwrap_or_default();
     let preset = config.effective_preset();
 
+    if crate::IS_MAS_BUILD {
+        if let Some(bundled_dir) = bundled_model_dir(preset) {
+            return Ok(bundled_dir);
+        }
+    }
+
     if let Some(ref path) = config.model_path {
         let path_str = path.to_string_lossy();
         if !path_str.contains("Shandianshuo")
@@ -123,6 +154,12 @@ pub async fn ensure_model_ready(model_override: Option<PathBuf>) -> Result<PathB
     if model_is_ready(&default_dir) {
         save_model_to_config(&default_dir)?;
         return Ok(default_dir);
+    }
+
+    if crate::IS_MAS_BUILD {
+        anyhow::bail!(
+            "Mac App Store 构建未找到内置模型，请重新打包并确认模型已写入 app bundle 资源目录。"
+        );
     }
 
     println!(

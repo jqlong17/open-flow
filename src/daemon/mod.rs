@@ -165,11 +165,31 @@ impl Daemon {
             anyhow::bail!("系统音频 helper 不可用，请先构建或重新打包 Open Flow.app");
         }
         let text_injector = TextInjector::new();
-        let text_corrector = TextCorrector::from_config(&config);
-        let correction_config_enabled = config.correction_enabled();
-        let correction_api_key_configured = !config.resolved_correction_api_key().trim().is_empty();
-        let correction_model_name = config.resolved_correction_model();
-        let correction_vocab_count = Self::personal_vocabulary_count();
+        let text_corrector = if crate::IS_MAS_BUILD {
+            None
+        } else {
+            TextCorrector::from_config(&config)
+        };
+        let correction_config_enabled = if crate::IS_MAS_BUILD {
+            false
+        } else {
+            config.correction_enabled()
+        };
+        let correction_api_key_configured = if crate::IS_MAS_BUILD {
+            false
+        } else {
+            !config.resolved_correction_api_key().trim().is_empty()
+        };
+        let correction_model_name = if crate::IS_MAS_BUILD {
+            "disabled_for_mas".to_string()
+        } else {
+            config.resolved_correction_model()
+        };
+        let correction_vocab_count = if crate::IS_MAS_BUILD {
+            0
+        } else {
+            Self::personal_vocabulary_count()
+        };
         let performance_logger = PerformanceLogWriter::from_config(&config)?;
         let performance_log_enabled = performance_logger.enabled();
 

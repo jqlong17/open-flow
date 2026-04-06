@@ -1,13 +1,17 @@
 use anyhow::{Context, Result};
 use open_flow::model_store;
+#[cfg(not(feature = "mas"))]
 use open_flow::system_audio::SystemAudioCapture;
 use std::path::PathBuf;
+#[cfg(not(feature = "mas"))]
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::info;
 
 use crate::asr::AsrEngine;
-use crate::audio::{save_buffer_to_wav_with_spec, AudioCapture};
+#[cfg(not(feature = "mas"))]
+use crate::audio::save_buffer_to_wav_with_spec;
+use crate::audio::AudioCapture;
 
 /// 单次转写 - 录音并识别
 pub async fn run(
@@ -56,7 +60,17 @@ pub async fn run(
             .as_secs();
         let recorded_path = temp_dir.join(format!("open-flow-transcribe-{}.wav", timestamp));
 
+        #[cfg(feature = "mas")]
+        let capture_mode = "microphone".to_string();
+        #[cfg(not(feature = "mas"))]
         let capture_mode = config.resolved_capture_mode();
+
+        #[cfg(feature = "mas")]
+        if config.resolved_capture_mode() != "microphone" {
+            println!("ℹ️  Mac App Store 构建仅支持麦克风录音，已忽略当前 capture_mode 配置。");
+            println!();
+        }
+
         if capture_mode == "microphone" {
             let audio_capture =
                 AudioCapture::new_with_device_name(config.resolved_input_source().as_deref())
@@ -71,6 +85,13 @@ pub async fn run(
 
             audio_capture.record_to_file(duration, &recorded_path)?;
         } else {
+            #[cfg(feature = "mas")]
+            {
+                anyhow::bail!("Mac App Store 构建不支持系统音频转写");
+            }
+
+            #[cfg(not(feature = "mas"))]
+            {
             let audio_info = SystemAudioCapture::info_from_config(&config);
             println!("音频设备: {}", audio_info.device_name);
             println!(
@@ -100,6 +121,7 @@ pub async fn run(
                 audio_info.channels,
                 &recorded_path,
             )?;
+            }
         }
 
         println!("✓ 录音完成");

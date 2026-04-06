@@ -8,6 +8,25 @@
 
 ---
 
+## Versions
+
+Open Flow currently has two distribution tracks:
+
+- **GitHub open-source edition**: the fuller version developed in this repository, with broader platform support and more experimental features such as meetings, draft workflows, and additional settings
+- **Mac App Store edition**: a more focused build designed for review stability and simpler onboarding, currently centered on **local offline microphone transcription** with a bundled offline model
+
+These two editions share the same project and core direction, but they do **not** aim to expose exactly the same surface area. If you see a feature in GitHub screenshots, issues, or docs that is missing from the App Store build, that is often an intentional product split rather than a broken installation.
+
+The App Store build is paid, but the project remains open source:
+
+- the App Store price helps cover Apple Developer Program membership, signing, distribution, and ongoing maintenance costs
+- the source code remains available here on GitHub
+- if you do not want to buy the App Store build, you are still free to build Open Flow from source yourself
+
+The screenshots and feature descriptions below mainly reflect the **GitHub open-source / fuller edition** unless noted otherwise.
+
+---
+
 ## Why Open Flow
 
 | | Open Flow | Wispr / Typeless / 闪电说 |
@@ -201,6 +220,8 @@ Go to **System Settings → Privacy & Security** and add `Open Flow.app` to each
 | **Microphone** | Privacy & Security → Microphone | Record audio |
 | **Accessibility** | Privacy & Security → Accessibility | Listen for global hotkey (Right Command) |
 | **Input Monitoring** | Privacy & Security → Input Monitoring | Listen for global hotkey (Right Command) |
+
+If you are using a build that includes meeting or system-audio capture, you may also need **Screen Recording** permission. The current Mac App Store edition usually only needs the three permissions above.
 
 > **Troubleshooting tip**: At startup the log prints `🔎 权限诊断`. All three values (`Microphone / Accessibility / Input Monitoring`) must be `true` for full functionality. View live logs:
 > ```bash

@@ -64,8 +64,8 @@ mod platform {
         icon_transcribing: Icon,
         ui_language: UiLanguage,
         status_item: MenuItem,
-        update_item: MenuItem,
-        draft_item: MenuItem,
+        update_item: Option<MenuItem>,
+        draft_item: Option<MenuItem>,
         pub exit_requested: Arc<AtomicBool>,
         pub prefs_requested: Arc<AtomicBool>,
         pub update_requested: Arc<AtomicBool>,
@@ -94,14 +94,25 @@ mod platform {
                 true,
                 None,
             );
-            let update = MenuItem::with_id("update", ui_language.tray_update(), true, None);
-            let draft = MenuItem::with_id("draft", ui_language.tray_draft(), true, None);
+            let update = (!crate::IS_MAS_BUILD)
+                .then(|| MenuItem::with_id("update", ui_language.tray_update(), true, None));
+            let draft = (!crate::IS_MAS_BUILD)
+                .then(|| MenuItem::with_id("draft", ui_language.tray_draft(), true, None));
             let status_item = MenuItem::with_id("status", ui_language.status_idle(), false, None);
             let prefs = MenuItem::with_id("prefs", ui_language.tray_preferences(), true, None);
             let exit = MenuItem::with_id("exit", ui_language.tray_exit(), true, None);
 
-            let menu = Menu::with_items(&[&title, &update, &draft, &status_item, &prefs, &exit])
-                .map_err(|e| {
+            let mut menu_items: Vec<&dyn tray_icon::menu::IsMenuItem> =
+                vec![&title, &status_item, &prefs, &exit];
+            if let Some(ref item) = update {
+                menu_items.insert(1, item);
+            }
+            if let Some(ref item) = draft {
+                let insert_at = if update.is_some() { 2 } else { 1 };
+                menu_items.insert(insert_at, item);
+            }
+
+            let menu = Menu::with_items(&menu_items).map_err(|e| {
                     tray_icon::Error::OsError(std::io::Error::new(
                         std::io::ErrorKind::Other,
                         e.to_string(),
@@ -204,15 +215,21 @@ mod platform {
         }
 
         pub fn set_draft_menu_text(&self, text: &str) {
-            self.draft_item.set_text(text);
+            if let Some(ref item) = self.draft_item {
+                item.set_text(text);
+            }
         }
 
         pub fn set_update_menu_text(&self, text: &str) {
-            self.update_item.set_text(text);
+            if let Some(ref item) = self.update_item {
+                item.set_text(text);
+            }
         }
 
         pub fn set_update_menu_enabled(&self, enabled: bool) {
-            self.update_item.set_enabled(enabled);
+            if let Some(ref item) = self.update_item {
+                item.set_enabled(enabled);
+            }
         }
 
         pub fn hide_from_menu_bar(&self) {

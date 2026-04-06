@@ -1,5 +1,7 @@
 #![allow(unexpected_cfgs)]
 
+pub const IS_MAS_BUILD: bool = cfg!(feature = "mas");
+
 pub mod asr;
 pub mod audio;
 pub mod common;

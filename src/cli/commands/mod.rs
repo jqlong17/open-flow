@@ -1,5 +1,7 @@
 pub mod audio_devices;
+#[cfg(not(feature = "mas"))]
 pub mod model;
+#[cfg(not(feature = "mas"))]
 pub mod setup;
 pub mod support;
 pub mod test_hotkey;

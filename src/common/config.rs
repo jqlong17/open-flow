@@ -1,11 +1,14 @@
 use anyhow::Result;
-use directories::ProjectDirs;
+use directories::{BaseDirs, ProjectDirs};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use tracing::info;
 
 const CONFIG_FILE: &str = "config.toml";
+const DEFAULT_PROJECT_QUALIFIER: &str = "com";
+const DEFAULT_PROJECT_ORG: &str = "openflow";
+const DEFAULT_PROJECT_APP: &str = "open-flow";
 
 /// 模型预设：仅支持 quantized（默认）与 fp16
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -117,6 +120,9 @@ fn default_capture_mode() -> String {
 impl Config {
     /// 当前生效的模型预设（config 未设置时默认 quantized）
     pub fn effective_preset(&self) -> ModelPreset {
+        if crate::IS_MAS_BUILD {
+            return ModelPreset::Quantized;
+        }
         self.model_preset
             .as_deref()
             .and_then(|s| s.trim().to_lowercase().parse().ok())
@@ -151,11 +157,26 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn resolved_provider(&self) -> String {
+        if crate::IS_MAS_BUILD {
+            return "local".to_string();
+        }
+        let provider = self.provider.trim();
+        if provider.is_empty() {
+            default_provider()
+        } else {
+            provider.to_string()
+        }
+    }
+
     pub fn resolved_groq_api_key(&self) -> String {
         std::env::var("GROQ_API_KEY").unwrap_or_else(|_| self.groq_api_key.clone())
     }
 
     pub fn correction_enabled(&self) -> bool {
+        if crate::IS_MAS_BUILD {
+            return false;
+        }
         matches!(
             self.correction_enabled.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on" | "enabled"
@@ -186,6 +207,9 @@ impl Config {
     }
 
     pub fn resolved_capture_mode(&self) -> String {
+        if crate::IS_MAS_BUILD {
+            return default_capture_mode();
+        }
         match self.capture_mode.trim() {
             "system_audio_desktop" => "system_audio_desktop".to_string(),
             "system_audio_application" => "system_audio_application".to_string(),
@@ -249,8 +273,16 @@ impl Config {
     }
 
     pub fn config_path() -> Result<PathBuf> {
-        let dirs = ProjectDirs::from("com", "openflow", "open-flow")
-            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
+        #[cfg(target_os = "macos")]
+        if let Some(bundle_id) = current_bundle_identifier() {
+            let base_dirs = BaseDirs::new()
+                .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
+            let config_dir = base_dirs.data_dir().join(bundle_id);
+            fs::create_dir_all(&config_dir)?;
+            return Ok(config_dir.join(CONFIG_FILE));
+        }
+
+        let dirs = project_dirs()?;
 
         let config_dir = dirs.config_dir();
         fs::create_dir_all(config_dir)?;
@@ -259,8 +291,16 @@ impl Config {
     }
 
     pub fn data_dir() -> Result<PathBuf> {
-        let dirs = ProjectDirs::from("com", "openflow", "open-flow")
-            .ok_or_else(|| anyhow::anyhow!("Could not determine data directory"))?;
+        #[cfg(target_os = "macos")]
+        if let Some(bundle_id) = current_bundle_identifier() {
+            let base_dirs =
+                BaseDirs::new().ok_or_else(|| anyhow::anyhow!("Could not determine data directory"))?;
+            let data_dir = base_dirs.data_dir().join(bundle_id);
+            fs::create_dir_all(&data_dir)?;
+            return Ok(data_dir);
+        }
+
+        let dirs = project_dirs()?;
 
         let data_dir = dirs.data_dir();
         fs::create_dir_all(data_dir)?;
@@ -282,6 +322,51 @@ impl Config {
         self.save()
     }
 }
+
+fn project_dirs() -> Result<ProjectDirs> {
+    ProjectDirs::from(
+        DEFAULT_PROJECT_QUALIFIER,
+        DEFAULT_PROJECT_ORG,
+        DEFAULT_PROJECT_APP,
+    )
+    .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))
+}
+
+#[cfg(target_os = "macos")]
+fn current_bundle_identifier() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let app_dir = exe
+        .ancestors()
+        .find(|path| path.extension().and_then(|s| s.to_str()) == Some("app"))?;
+    let plist_path = app_dir.join("Contents").join("Info.plist");
+    if !plist_path.exists() {
+        return None;
+    }
+
+    let output = std::process::Command::new("/usr/bin/plutil")
+        .args([
+            "-extract",
+            "CFBundleIdentifier",
+            "raw",
+            "-o",
+            "-",
+            plist_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let identifier = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if identifier.is_empty() {
+        None
+    } else {
+        Some(identifier)
+    }
+}
+
 
 fn normalize_hotkey_for_platform(hotkey: &str) -> String {
     let normalized = hotkey.trim().to_ascii_lowercase();

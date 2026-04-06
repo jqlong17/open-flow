@@ -36,7 +36,7 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
         case .meetings:
             isEnglish ? "Keep meeting capture status, saved sessions, and troubleshooting tools together." : "把会议采集状态、会话记录和会议排障工具放在一起。"
         case .permissions:
-            isEnglish ? "Check the macOS permissions Open Flow needs for recording, meeting capture, hotkeys, and text injection." : "检查 Open Flow 录音、会议采集、热键和文字注入所需的 macOS 权限。"
+            isEnglish ? "Check the macOS permissions Open Flow needs for recording, hotkeys, and text injection." : "检查 Open Flow 录音、热键和文字注入所需的 macOS 权限。"
         case .logs:
             isEnglish ? "Inspect daemon output, hotkey events, downloads, and developer performance logs when something feels off." : "出现异常时查看 daemon 输出、热键事件、下载记录和开发性能日志。"
         }
@@ -65,6 +65,13 @@ struct ContentView: View {
     private let pageSpacing: CGFloat = 16
 
     private var isEnglish: Bool { config.normalizedUiLanguage == "en" }
+    private var isMASBuild: Bool {
+        let bundleID = Bundle.main.bundleIdentifier?.lowercased() ?? ""
+        return bundleID.contains(".mas")
+    }
+    private var availablePanes: [SettingsPane] {
+        isMASBuild ? [.general, .recognition, .permissions, .logs] : SettingsPane.allCases
+    }
     private var selectedCaptureMode: String { config.normalizedCaptureMode }
     private var selectedCaptureModeUsesMicrophone: Bool {
         selectedCaptureMode == "microphone" || selectedCaptureMode == "system_audio_microphone"
@@ -76,6 +83,8 @@ struct ContentView: View {
 
     private var revealActionTitle: String {
         switch selectedPane {
+        case .recognition where isMASBuild:
+            return tr("打开模型目录", "Open Model Folder")
         case .vocabulary:
             return tr("显示词表", "Reveal Vocabulary")
         case .models:
@@ -112,8 +121,10 @@ struct ContentView: View {
         .onAppear {
             config.checkModelReady()
             config.refreshInputDevices()
-            config.refreshSystemAudioDiagnostics()
-            config.refreshMeetingSessionsOverview()
+            if !isMASBuild {
+                config.refreshSystemAudioDiagnostics()
+                config.refreshMeetingSessionsOverview()
+            }
         }
         .onChange(of: config.provider) { newValue in
             if newValue == "local" {
@@ -127,7 +138,7 @@ struct ContentView: View {
         .onChange(of: selectedPane) { pane in
             if pane == .permissions {
                 config.refreshPermissions()
-            } else if pane == .meetings {
+            } else if !isMASBuild && pane == .meetings {
                 config.refreshSystemAudioDiagnostics()
                 config.refreshMeetingSessionsOverview()
             } else if pane == .logs {
@@ -139,7 +150,7 @@ struct ContentView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(SettingsPane.allCases) { pane in
+                ForEach(availablePanes) { pane in
                     SidebarItemButton(
                         title: pane.title(isEnglish: isEnglish),
                         subtitle: nil,
@@ -249,8 +260,10 @@ struct ContentView: View {
                 borderAction(title: tr("刷新", "Refresh"), icon: "arrow.clockwise") {
                     config.refreshStatus()
                     config.refreshPermissions()
-                    config.refreshSystemAudioDiagnostics()
-                    config.refreshMeetingSessionsOverview()
+                    if !isMASBuild {
+                        config.refreshSystemAudioDiagnostics()
+                        config.refreshMeetingSessionsOverview()
+                    }
                     config.checkModelReady()
                     if selectedPane == .logs {
                         config.loadLogs()
@@ -258,7 +271,9 @@ struct ContentView: View {
                 }
 
                 borderAction(title: revealActionTitle, icon: "folder") {
-                    if selectedPane == .vocabulary {
+                    if selectedPane == .recognition && isMASBuild {
+                        config.openModelFolder()
+                    } else if selectedPane == .vocabulary {
                         NSWorkspace.shared.activateFileViewerSelecting([config.personalVocabularyFileURL])
                     } else if selectedPane == .models {
                         config.openModelFolder()
@@ -335,16 +350,20 @@ struct ContentView: View {
                         VStack(alignment: .trailing, spacing: 8) {
                             Picker("", selection: $config.captureMode) {
                                 Text(tr("麦克风", "Microphone")).tag("microphone")
-                                Text(tr("桌面音频（实验）", "Desktop Audio (Experimental)")).tag("system_audio_desktop")
-                                Text(tr("桌面音频 + 麦克风（会议）", "Desktop Audio + Microphone (Meeting)")).tag("system_audio_microphone")
-                                Text(tr("应用音频（实验）", "Application Audio (Experimental)")).tag("system_audio_application")
+                                if !isMASBuild {
+                                    Text(tr("桌面音频（实验）", "Desktop Audio (Experimental)")).tag("system_audio_desktop")
+                                    Text(tr("桌面音频 + 麦克风（会议）", "Desktop Audio + Microphone (Meeting)")).tag("system_audio_microphone")
+                                    Text(tr("应用音频（实验）", "Application Audio (Experimental)")).tag("system_audio_application")
+                                }
                             }
                             .pickerStyle(.menu)
                             .labelsHidden()
                             .frame(width: 320)
 
                             Text(
-                                selectedCaptureMode == "system_audio_microphone"
+                                isMASBuild
+                                    ? tr("Mac App Store 版本仅保留麦克风输入主路径。", "The Mac App Store build keeps microphone input only.")
+                                    : selectedCaptureMode == "system_audio_microphone"
                                     ? tr("会议模式会同时采集桌面系统声音与麦克风输入，并尝试分别输出“对方 / 我”的结果。", "Meeting mode captures both desktop system audio and your microphone, then tries to output separate “Others / Me” results.")
                                     : selectedCaptureMode == "system_audio_desktop"
                                         ? tr("桌面音频模式只采集系统播放出来的声音，不会记录你的麦克风发言。", "Desktop audio mode only captures system playback and does not record your microphone.")
@@ -502,7 +521,34 @@ struct ContentView: View {
     }
 
     private var recognitionPage: some View {
-        VStack(alignment: .leading, spacing: pageSpacing) {
+        if isMASBuild {
+            return AnyView(
+                VStack(alignment: .leading, spacing: pageSpacing) {
+                    SettingsCard(title: tr("本地离线识别", "Local Offline Recognition"), subtitle: tr("商店版固定使用本地离线 SenseVoice，并直接读取应用内置模型。", "The store build is fixed to local offline SenseVoice and reads the bundled model directly.")) {
+                        VStack(spacing: 0) {
+                            SettingsRow(label: tr("引擎", "Engine"), description: tr("商店版不提供云端识别切换。", "The store build does not offer cloud transcription switching.")) {
+                                valueCapsule(tr("本地 SenseVoice", "Local SenseVoice"))
+                            }
+
+                            rowDivider
+                            SettingsRow(label: tr("模型状态", "Model Status"), description: tr("内置模型存在时，安装后即可直接使用。", "Once the bundled model is present, the app is ready to use immediately after install.")) {
+                                StatusPill(
+                                    text: config.modelReady ? tr("已就绪", "Ready") : tr("缺失", "Missing"),
+                                    tone: config.modelReady ? .success : .warning
+                                )
+                            }
+
+                            rowDivider
+                            SettingsRow(label: tr("实际路径", "Resolved Path"), description: tr("这是当前商店版实际读取离线模型的目录。", "This is the actual directory the store build reads the offline model from.")) {
+                                modelPathActions
+                            }
+                        }
+                    }
+                }
+            )
+        }
+
+        return AnyView(VStack(alignment: .leading, spacing: pageSpacing) {
             SettingsCard(title: tr("语音识别引擎", "Speech Recognition Provider"), subtitle: tr("选择整个应用使用的转写引擎。", "Choose the engine that powers transcription across the app.")) {
                 VStack(spacing: 0) {
                     SettingsRow(label: tr("引擎", "Provider"), description: tr("本地 SenseVoice 更注重隐私，Groq Whisper 走云端转写。", "Use local SenseVoice for privacy, or Groq Whisper for cloud transcription.")) {
@@ -587,7 +633,7 @@ struct ContentView: View {
                     }
                 }
             }
-        }
+        })
     }
 
     private var modelsPage: some View {
@@ -693,7 +739,7 @@ struct ContentView: View {
 
     private var permissionsPage: some View {
         VStack(alignment: .leading, spacing: pageSpacing) {
-            SettingsCard(title: tr("macOS 权限检查", "macOS Permission Checklist"), subtitle: tr("缺少权限时打开对应系统面板，授权后再重启 daemon。", "Open the right system panel when something is missing, then restart the daemon after granting access.")) {
+            SettingsCard(title: tr("macOS 权限检查", "macOS Permission Checklist"), subtitle: tr("缺少权限时打开对应系统面板。Open Flow 会在权限生效后自动恢复 daemon。", "Open the right system panel when something is missing. Open Flow will automatically recover the daemon after permissions take effect.")) {
                 VStack(spacing: 0) {
                     permissionSettingsRow(
                         title: tr("辅助功能", "Accessibility"),
@@ -719,19 +765,22 @@ struct ContentView: View {
                         actionTitle: config.microphonePermissionActionTitle,
                         action: config.resolveMicrophonePermission
                     )
-
-                    rowDivider
-                    permissionSettingsRow(
-                        title: tr("屏幕录制", "Screen Recording"),
-                        description: tr("桌面音频和会议模式需要它来采集系统播放出来的声音。", "Desktop audio and meeting mode need this to capture sound that macOS is playing out."),
-                        granted: config.screenRecordingGranted,
-                        action: config.openScreenRecordingSettings
-                    )
                 }
             }
 
-            SettingsCard(title: tr("授权后", "After Granting Access"), subtitle: tr("macOS 的权限更新不一定实时生效。重启 daemon 会更稳妥。", "macOS permission updates are not always live. Restarting the daemon keeps the setup predictable.")) {
-                SettingsRow(label: tr("重启提示", "Restart Hint"), description: tr("当必需权限都授权后，重启 Open Flow，让 daemon 从干净状态重新检查权限。", "Once all required permissions are granted, restart Open Flow so the daemon re-checks access from a clean state.")) {
+            SettingsCard(title: tr("授权后自动恢复", "Auto Recovery After Grant"), subtitle: tr("权限变化会被短轮询检测到；一旦必需权限全部就绪，就会自动重启 daemon 并刷新状态。", "Permission changes are polled briefly; once all required permissions are ready, the daemon restarts automatically and status refreshes.")) {
+                SettingsRow(label: tr("当前状态", "Current Status"), description: tr("如果系统设置刚刚完成授权，这里会显示自动恢复进度。只有自动恢复失败时，才需要你手动重启。", "If you just granted access in System Settings, this shows the automatic recovery progress. Manual restart is only needed if auto recovery fails.")) {
+                    StatusPill(
+                        text: config.permissionRecoveryInProgress
+                            ? config.permissionRecoveryStatus
+                            : tr("空闲", "Idle"),
+                        tone: config.permissionRecoveryInProgress ? .info : .neutral
+                    )
+                }
+
+                rowDivider
+
+                SettingsRow(label: tr("手动兜底", "Manual Fallback"), description: tr("如果某些权限在系统里已经打开，但状态仍然没有刷新，可以手动重启 daemon。", "If permissions are already enabled in System Settings but the status still has not refreshed, you can restart the daemon manually.")) {
                     SoftActionButton(
                         title: tr("重启 daemon", "Restart daemon"),
                         icon: "arrow.clockwise",
@@ -851,54 +900,56 @@ struct ContentView: View {
 
     private var logsPage: some View {
         VStack(alignment: .leading, spacing: pageSpacing) {
-            SettingsCard(title: tr("会议模式排障", "Meeting Capture Diagnostics"), subtitle: tr("这里专门用于权限检查、探测和排障。正式的录音模式选择已经合并到上方的通用设置中。", "This area is dedicated to permissions, probing, and troubleshooting. The main recording-mode selection now lives in the general settings above.")) {
-                VStack(spacing: 0) {
-                    SettingsRow(label: tr("屏幕录制权限", "Screen Recording Permission"), description: tr("ScreenCaptureKit 枚举和捕获系统音频前，需要先获得 macOS 的屏幕录制授权。", "ScreenCaptureKit needs macOS screen recording permission before it can enumerate or capture system audio.")) {
-                        HStack(spacing: 10) {
-                            StatusPill(
-                                text: config.systemAudioScreenRecordingGranted ? tr("已授权", "Granted") : tr("未授权", "Not Granted"),
-                                tone: config.systemAudioScreenRecordingGranted ? .success : .warning
-                            )
+            if !isMASBuild {
+                SettingsCard(title: tr("会议模式排障", "Meeting Capture Diagnostics"), subtitle: tr("这里专门用于权限检查、探测和排障。正式的录音模式选择已经合并到上方的通用设置中。", "This area is dedicated to permissions, probing, and troubleshooting. The main recording-mode selection now lives in the general settings above.")) {
+                    VStack(spacing: 0) {
+                        SettingsRow(label: tr("屏幕录制权限", "Screen Recording Permission"), description: tr("ScreenCaptureKit 枚举和捕获系统音频前，需要先获得 macOS 的屏幕录制授权。", "ScreenCaptureKit needs macOS screen recording permission before it can enumerate or capture system audio.")) {
+                            HStack(spacing: 10) {
+                                StatusPill(
+                                    text: config.systemAudioScreenRecordingGranted ? tr("已授权", "Granted") : tr("未授权", "Not Granted"),
+                                    tone: config.systemAudioScreenRecordingGranted ? .success : .warning
+                                )
 
-                            SoftActionButton(
-                                title: tr("请求权限", "Request Access"),
-                                icon: "rectangle.and.hand.point.up.left",
-                                fill: Color(red: 0.92, green: 0.95, blue: 0.99),
-                                foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
-                            ) {
-                                config.requestSystemAudioPermission()
-                            }
+                                SoftActionButton(
+                                    title: tr("请求权限", "Request Access"),
+                                    icon: "rectangle.and.hand.point.up.left",
+                                    fill: Color(red: 0.92, green: 0.95, blue: 0.99),
+                                    foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
+                                ) {
+                                    config.requestSystemAudioPermission()
+                                }
 
-                            SoftActionButton(
-                                title: tr("刷新状态", "Refresh"),
-                                icon: "arrow.clockwise",
-                                fill: Color(red: 0.92, green: 0.95, blue: 0.99),
-                                foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
-                            ) {
-                                config.refreshSystemAudioDiagnostics()
+                                SoftActionButton(
+                                    title: tr("刷新状态", "Refresh"),
+                                    icon: "arrow.clockwise",
+                                    fill: Color(red: 0.92, green: 0.95, blue: 0.99),
+                                    foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
+                                ) {
+                                    config.refreshSystemAudioDiagnostics()
+                                }
                             }
                         }
-                    }
 
-                    rowDivider
-                    SettingsRow(label: tr("桌面音频探测", "Desktop Audio Probe"), description: tr("运行一个 3 秒钟的 ScreenCaptureKit 桌面音频探测，验证系统是否真的开始返回音频回调。", "Run a 3-second ScreenCaptureKit desktop-audio probe to verify that the system is actually returning audio callbacks.")) {
-                        VStack(alignment: .trailing, spacing: 8) {
-                            SoftActionButton(
-                                title: tr("运行桌面探测", "Run Desktop Probe"),
-                                icon: "waveform.path.ecg",
-                                fill: Color(red: 0.92, green: 0.95, blue: 0.99),
-                                foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
-                            ) {
-                                config.runDesktopSystemAudioProbe()
-                            }
-                            .disabled(config.systemAudioProbeRunning || !config.systemAudioScreenRecordingGranted)
+                        rowDivider
+                        SettingsRow(label: tr("桌面音频探测", "Desktop Audio Probe"), description: tr("运行一个 3 秒钟的 ScreenCaptureKit 桌面音频探测，验证系统是否真的开始返回音频回调。", "Run a 3-second ScreenCaptureKit desktop-audio probe to verify that the system is actually returning audio callbacks.")) {
+                            VStack(alignment: .trailing, spacing: 8) {
+                                SoftActionButton(
+                                    title: tr("运行桌面探测", "Run Desktop Probe"),
+                                    icon: "waveform.path.ecg",
+                                    fill: Color(red: 0.92, green: 0.95, blue: 0.99),
+                                    foreground: Color(red: 0.12, green: 0.16, blue: 0.24)
+                                ) {
+                                    config.runDesktopSystemAudioProbe()
+                                }
+                                .disabled(config.systemAudioProbeRunning || !config.systemAudioScreenRecordingGranted)
 
-                            if !config.systemAudioDesktopProbeSummary.isEmpty {
-                                Text(config.systemAudioDesktopProbeSummary)
-                                    .font(.system(size: 11.5, weight: .medium))
-                                    .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
-                                    .frame(width: 360, alignment: .trailing)
-                                    .multilineTextAlignment(.trailing)
+                                if !config.systemAudioDesktopProbeSummary.isEmpty {
+                                    Text(config.systemAudioDesktopProbeSummary)
+                                        .font(.system(size: 11.5, weight: .medium))
+                                        .foregroundStyle(Color(red: 0.43, green: 0.48, blue: 0.56))
+                                        .frame(width: 360, alignment: .trailing)
+                                        .multilineTextAlignment(.trailing)
+                                }
                             }
                         }
                     }
@@ -995,7 +1046,9 @@ struct ContentView: View {
         }
         .onAppear {
             config.loadLogs()
-            config.refreshSystemAudioDiagnostics()
+            if !isMASBuild {
+                config.refreshSystemAudioDiagnostics()
+            }
         }
     }
 
