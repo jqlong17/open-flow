@@ -499,6 +499,13 @@ OPENFLOW_PERF_DEV_UI=1 ./scripts/build-app.sh
 
 欢迎 fork、提 issue、提交 PR，一起把开源语音输入体验做得更好。
 
+提交 PR 前，请先阅读：
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [CLA.md](CLA.md)
+
+其中会明确说明：贡献到本仓库的内容，可被项目用于开源分发，也可用于包括 App Store 在内的付费分发。
+
 ---
 
 ## License

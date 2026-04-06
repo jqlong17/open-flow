@@ -259,6 +259,13 @@ If you are using a build that includes meeting or system-audio capture, you may 
 
 Fork, open issues, submit PRs. Let's improve open-source voice input together.
 
+Before opening a PR, please read:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [CLA.md](CLA.md)
+
+These documents explain that contributions submitted to this repository may be used in both open-source distributions and paid/commercial distributions of Open Flow, including app-store distribution.
+
 ---
 
 ## License
